@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import ModelIO
 import SceneKit
 import UIKit
@@ -88,10 +89,34 @@ private struct TextureSampler {
             case let cgImage as CGImage:
                 return cgImage
             case let url as URL:
+                if let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+                   let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                    return cgImage
+                }
+                if let data = try? Data(contentsOf: url) {
+                    if let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+                       let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                        return cgImage
+                    }
+                    if let image = UIImage(data: data), let cgImage = image.cgImage {
+                        return cgImage
+                    }
+                }
                 if let image = UIImage(contentsOfFile: url.path), let cgImage = image.cgImage {
                     return cgImage
                 }
             case let path as String:
+                let fileURL = URL(fileURLWithPath: path)
+                if let imageSource = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
+                   let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                    return cgImage
+                }
+                if let data = try? Data(contentsOf: fileURL) {
+                    if let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+                       let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                        return cgImage
+                    }
+                }
                 if let image = UIImage(contentsOfFile: path), let cgImage = image.cgImage {
                     return cgImage
                 }
@@ -104,21 +129,14 @@ private struct TextureSampler {
     }
 
     private static func extractFlatColor(from material: SCNMaterial?) -> SIMD3<Float>? {
-        let candidates: [Any?] = [
-            material?.diffuse.contents,
-            material?.emission.contents
-        ]
+        guard let color = material?.diffuse.contents as? UIColor else { return nil }
 
-        for candidate in candidates {
-            if let color = candidate as? UIColor {
-                var red: CGFloat = 0
-                var green: CGFloat = 0
-                var blue: CGFloat = 0
-                var alpha: CGFloat = 0
-                if color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
-                    return SIMD3<Float>(Float(red), Float(green), Float(blue))
-                }
-            }
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        if color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
+            return SIMD3<Float>(Float(red), Float(green), Float(blue))
         }
 
         return nil
