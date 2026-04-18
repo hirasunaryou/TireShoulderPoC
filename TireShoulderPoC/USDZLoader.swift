@@ -16,48 +16,59 @@ private struct TextureSampler {
         case unavailable
     }
 
+    let hasImageTexture: Bool
+    let hasFlatColor: Bool
+    let sourceSummary: String
+
     private let mode: Mode
 
     init(material: SCNMaterial?) {
         if let cgImage = TextureSampler.extractCGImage(from: material),
            let prepared = TextureSampler.prepareRGBA(cgImage: cgImage) {
             self.mode = .image(width: prepared.width, height: prepared.height, pixels: prepared.pixels)
+            self.hasImageTexture = true
+            self.hasFlatColor = false
+            self.sourceSummary = "image(\(prepared.width)x\(prepared.height))"
             return
         }
 
         if let color = TextureSampler.extractFlatColor(from: material) {
             self.mode = .flat(color)
+            self.hasImageTexture = false
+            self.hasFlatColor = true
+            self.sourceSummary = "flatColor"
             return
         }
 
         self.mode = .unavailable
+        self.hasImageTexture = false
+        self.hasFlatColor = false
+        self.sourceSummary = "unavailable"
     }
 
-    func color(at uv: SIMD2<Float>) -> SIMD3<Float>? {
-        switch mode {
-        case .flat(let rgb):
-            return rgb
+    func sampleImage(at uv: SIMD2<Float>) -> SIMD3<Float>? {
+        guard case .image(let width, let height, let pixels) = mode else { return nil }
 
-        case .image(let width, let height, let pixels):
-            let wrappedU = uv.x - floor(uv.x)
-            var wrappedV = uv.y - floor(uv.y)
-            wrappedV = 1 - wrappedV
+        let wrappedU = uv.x - floor(uv.x)
+        var wrappedV = uv.y - floor(uv.y)
+        wrappedV = 1 - wrappedV
 
-            let x = min(width - 1, max(0, Int(round(wrappedU * Float(width - 1)))))
-            let y = min(height - 1, max(0, Int(round(wrappedV * Float(height - 1)))))
-            let index = (y * width + x) * 4
+        let x = min(width - 1, max(0, Int(round(wrappedU * Float(width - 1)))))
+        let y = min(height - 1, max(0, Int(round(wrappedV * Float(height - 1)))))
+        let index = (y * width + x) * 4
 
-            guard index + 3 < pixels.count else { return nil }
+        guard index + 3 < pixels.count else { return nil }
 
-            return SIMD3<Float>(
-                Float(pixels[index]) / 255,
-                Float(pixels[index + 1]) / 255,
-                Float(pixels[index + 2]) / 255
-            )
+        return SIMD3<Float>(
+            Float(pixels[index]) / 255,
+            Float(pixels[index + 1]) / 255,
+            Float(pixels[index + 2]) / 255
+        )
+    }
 
-        case .unavailable:
-            return nil
-        }
+    var flatColor: SIMD3<Float>? {
+        guard case .flat(let rgb) = mode else { return nil }
+        return rgb
     }
 
     private static func extractCGImage(from material: SCNMaterial?) -> CGImage? {
@@ -143,6 +154,8 @@ private struct TextureSampler {
 }
 
 enum USDZLoader {
+    private static let maxCachedSamples = 12_000
+
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         let scene: SCNScene
         do {
@@ -161,24 +174,34 @@ enum USDZLoader {
         var bluePoints: [SIMD3<Float>] = []
         var redPoints: [SIMD3<Float>] = []
         var totalSamples = 0
+        var skippedNoUVTriangles = 0
+        var materialRecords: [MaterialInspectionRecord] = []
+        var cachedSamples: [CachedCentroidSample] = []
 
         for node in geometryNodes {
             guard let geometry = node.geometry else { continue }
-
             guard let vertexSource = geometry.sources(for: .vertex).first else { continue }
+
             let localPositions = decodeVector3(source: vertexSource)
             guard !localPositions.isEmpty else { continue }
 
             let worldPositions = localPositions.map { transformPoint($0, by: node.simdWorldTransform) }
             let uvSource = geometry.sources(for: .texcoord).first
-            let uvs = uvSource.map { decodeVector2(source: $0) } ?? Array(repeating: .zero, count: localPositions.count)
+            let hasUV = uvSource != nil
+            let uvs = uvSource.map { decodeVector2(source: $0) } ?? []
+
+            let vertexColorSource = geometry.sources(for: .color).first
+            let vertexColors = vertexColorSource.map { decodeColor(source: $0) } ?? []
+            let hasVertexColor = !vertexColors.isEmpty
 
             for (elementIndex, element) in geometry.elements.enumerated() {
                 let material = geometry.materials[safe: elementIndex] ?? geometry.firstMaterial
                 let sampler = TextureSampler(material: material)
                 let indices = decodeIndices(element: element)
-
                 guard indices.count >= 3 else { continue }
+
+                let triangleCount = indices.count / 3
+                var sampledTriangleCount = 0
 
                 for triangleStart in stride(from: 0, to: indices.count - 2, by: 3) {
                     let i0 = indices[triangleStart]
@@ -187,20 +210,53 @@ enum USDZLoader {
 
                     guard i0 < worldPositions.count,
                           i1 < worldPositions.count,
-                          i2 < worldPositions.count,
-                          i0 < uvs.count,
-                          i1 < uvs.count,
-                          i2 < uvs.count else {
+                          i2 < worldPositions.count else {
                         continue
                     }
 
                     let centroidPosition = (worldPositions[i0] + worldPositions[i1] + worldPositions[i2]) / 3
-                    let centroidUV = (uvs[i0] + uvs[i1] + uvs[i2]) / 3
 
-                    guard let rgb = sampler.color(at: centroidUV) else { continue }
+                    // 優先順位: 頂点色 > UV付き画像テクスチャ > フラット色 > 取得不可
+                    let sampledRGB: SIMD3<Float>?
+                    if hasVertexColor,
+                       i0 < vertexColors.count,
+                       i1 < vertexColors.count,
+                       i2 < vertexColors.count {
+                        sampledRGB = (vertexColors[i0] + vertexColors[i1] + vertexColors[i2]) / 3
+                    } else if sampler.hasImageTexture {
+                        if hasUV,
+                           i0 < uvs.count,
+                           i1 < uvs.count,
+                           i2 < uvs.count {
+                            let centroidUV = (uvs[i0] + uvs[i1] + uvs[i2]) / 3
+                            sampledRGB = sampler.sampleImage(at: centroidUV)
+                        } else {
+                            skippedNoUVTriangles += 1
+                            sampledRGB = nil
+                        }
+                    } else if let flatColor = sampler.flatColor {
+                        sampledRGB = flatColor
+                    } else {
+                        sampledRGB = nil
+                    }
+
+                    guard let rgb = sampledRGB else { continue }
+
+                    sampledTriangleCount += 1
                     totalSamples += 1
 
-                    switch classify(rgb: rgb, config: config) {
+                    let hsv = hsvColor(from: rgb)
+                    if cachedSamples.count < maxCachedSamples {
+                        cachedSamples.append(
+                            CachedCentroidSample(
+                                worldPosition: Point3(centroidPosition),
+                                rgb: rgb,
+                                hsv: hsv
+                            )
+                        )
+                    }
+
+                    switch classify(hsv: hsv, config: config) {
                     case .blue:
                         bluePoints.append(centroidPosition)
                     case .red:
@@ -209,35 +265,90 @@ enum USDZLoader {
                         break
                     }
                 }
+
+                let record = MaterialInspectionRecord(
+                    nodeName: node.name ?? "(no-node-name)",
+                    geometryName: geometry.name ?? "(no-geometry-name)",
+                    materialIndex: elementIndex,
+                    hasUV: hasUV,
+                    hasVertexColor: hasVertexColor,
+                    triangleCount: triangleCount,
+                    sampledTriangleCount: sampledTriangleCount,
+                    textureSourceSummary: sampler.sourceSummary
+                )
+                materialRecords.append(record)
             }
         }
 
         let rawBlueCount = bluePoints.count
         let rawRedCount = redPoints.count
-
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
-        guard reducedBlue.count >= config.minimumMaskPoints else {
-            throw PoCError.maskExtractionFailed(
-                "青点は \(reducedBlue.count) 点でした。rawBlue=\(rawBlueCount), rawRed=\(rawRedCount), totalSamples=\(totalSamples)。" +
-                " しきい値を緩めるか、Scaniverse USDZ のテクスチャ取得形式を確認してください。"
-            )
+        var warnings: [String] = []
+        if reducedBlue.count < config.minimumMaskPoints {
+            warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(rawBlueCount), min=\(config.minimumMaskPoints)")
         }
-
-        guard reducedRed.count >= config.minimumMaskPoints else {
-            throw PoCError.maskExtractionFailed(
-                "赤点は \(reducedRed.count) 点でした。rawBlue=\(rawBlueCount), rawRed=\(rawRedCount), totalSamples=\(totalSamples)。" +
-                " しきい値を緩めるか、テープ色・照明を見直してください。"
-            )
+        if reducedRed.count < config.minimumMaskPoints {
+            warnings.append("赤マスク不足: reduced=\(reducedRed.count), raw=\(rawRedCount), min=\(config.minimumMaskPoints)")
         }
-
+        if skippedNoUVTriangles > 0 {
+            warnings.append("UVなし三角形のため画像テクスチャを未サンプリング: \(skippedNoUVTriangles)")
+        }
 
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
             bluePoints: reducedBlue.map(Point3.init),
             redPoints: reducedRed.map(Point3.init),
-            totalSamples: totalSamples
+            geometryNodeCount: geometryNodes.count,
+            totalSamples: totalSamples,
+            rawBlueCount: rawBlueCount,
+            rawRedCount: rawRedCount,
+            skippedNoUVTriangles: skippedNoUVTriangles,
+            materialRecords: materialRecords,
+            cachedSamples: cachedSamples,
+            warnings: warnings
+        )
+    }
+
+    static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
+        var bluePoints: [SIMD3<Float>] = []
+        var redPoints: [SIMD3<Float>] = []
+
+        for sample in package.cachedSamples {
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                bluePoints.append(sample.worldPosition.simd)
+            case .red:
+                redPoints.append(sample.worldPosition.simd)
+            case .other:
+                break
+            }
+        }
+
+        let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
+        let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
+
+        var warnings = package.warnings.filter { !$0.contains("マスク不足") }
+        if reducedBlue.count < config.minimumMaskPoints {
+            warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(bluePoints.count), min=\(config.minimumMaskPoints)")
+        }
+        if reducedRed.count < config.minimumMaskPoints {
+            warnings.append("赤マスク不足: reduced=\(reducedRed.count), raw=\(redPoints.count), min=\(config.minimumMaskPoints)")
+        }
+
+        return LoadedModelPackage(
+            displayName: package.displayName,
+            bluePoints: reducedBlue.map(Point3.init),
+            redPoints: reducedRed.map(Point3.init),
+            geometryNodeCount: package.geometryNodeCount,
+            totalSamples: package.totalSamples,
+            rawBlueCount: bluePoints.count,
+            rawRedCount: redPoints.count,
+            skippedNoUVTriangles: package.skippedNoUVTriangles,
+            materialRecords: package.materialRecords,
+            cachedSamples: package.cachedSamples,
+            warnings: warnings
         )
     }
 
@@ -251,8 +362,7 @@ enum USDZLoader {
         }
     }
 
-    private static func classify(rgb: SIMD3<Float>, config: AnalysisConfig) -> MaskColor {
-        let hsv = hsvColor(from: rgb)
+    private static func classify(hsv: HSVColor, config: AnalysisConfig) -> MaskColor {
         guard hsv.saturation >= config.minSaturation, hsv.value >= config.minValue else {
             return .other
         }
@@ -268,7 +378,7 @@ enum USDZLoader {
         return .other
     }
 
-    private static func hsvColor(from rgb: SIMD3<Float>) -> (hue: Float, saturation: Float, value: Float) {
+    private static func hsvColor(from rgb: SIMD3<Float>) -> HSVColor {
         let r = rgb.x
         let g = rgb.y
         let b = rgb.z
@@ -290,7 +400,7 @@ enum USDZLoader {
 
         let normalizedHue = hue < 0 ? hue + 360 : hue
         let saturation = maximum == 0 ? 0 : delta / maximum
-        return (normalizedHue, saturation, maximum)
+        return HSVColor(hue: normalizedHue, saturation: saturation, value: maximum)
     }
 
     private static func decodeVector3(source: SCNGeometrySource) -> [SIMD3<Float>] {
@@ -315,6 +425,32 @@ enum USDZLoader {
             let x = readFloatComponent(from: data, offset: base, bytesPerComponent: source.bytesPerComponent)
             let y = readFloatComponent(from: data, offset: base + source.bytesPerComponent, bytesPerComponent: source.bytesPerComponent)
             return SIMD2<Float>(x, y)
+        }
+    }
+
+    private static func decodeColor(source: SCNGeometrySource) -> [SIMD3<Float>] {
+        guard source.componentsPerVector >= 3 else { return [] }
+        let data = source.data
+
+        return (0..<source.vectorCount).map { index in
+            let base = source.dataOffset + index * source.dataStride
+            let r = readColorComponent(from: data, offset: base, bytesPerComponent: source.bytesPerComponent)
+            let g = readColorComponent(from: data, offset: base + source.bytesPerComponent, bytesPerComponent: source.bytesPerComponent)
+            let b = readColorComponent(from: data, offset: base + source.bytesPerComponent * 2, bytesPerComponent: source.bytesPerComponent)
+            return SIMD3<Float>(r, g, b)
+        }
+    }
+
+    private static func readColorComponent(from data: Data, offset: Int, bytesPerComponent: Int) -> Float {
+        switch bytesPerComponent {
+        case 1:
+            var value: UInt8 = 0
+            _ = withUnsafeMutableBytes(of: &value) { buffer in
+                data.copyBytes(to: buffer, from: offset ..< offset + 1)
+            }
+            return Float(value) / 255
+        default:
+            return readFloatComponent(from: data, offset: offset, bytesPerComponent: bytesPerComponent)
         }
     }
 

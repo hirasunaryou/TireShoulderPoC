@@ -37,6 +37,31 @@ struct Point3: Hashable, Sendable {
     }
 }
 
+struct HSVColor: Sendable {
+    var hue: Float
+    var saturation: Float
+    var value: Float
+}
+
+struct CachedCentroidSample: Identifiable, Sendable {
+    let id = UUID()
+    let worldPosition: Point3
+    let rgb: SIMD3<Float>
+    let hsv: HSVColor
+}
+
+struct MaterialInspectionRecord: Identifiable, Sendable {
+    let id = UUID()
+    let nodeName: String
+    let geometryName: String
+    let materialIndex: Int
+    let hasUV: Bool
+    let hasVertexColor: Bool
+    let triangleCount: Int
+    let sampledTriangleCount: Int
+    let textureSourceSummary: String
+}
+
 struct Transform4x4: Sendable {
     var values: [Float]
 
@@ -64,13 +89,20 @@ struct LoadedModelPackage: Sendable {
     let displayName: String
     let bluePoints: [Point3]
     let redPoints: [Point3]
+    let geometryNodeCount: Int
     let totalSamples: Int
+    let rawBlueCount: Int
+    let rawRedCount: Int
+    let skippedNoUVTriangles: Int
+    let materialRecords: [MaterialInspectionRecord]
+    let cachedSamples: [CachedCentroidSample]
+    let warnings: [String]
 }
 
 struct ModelInput {
     let kind: ModelKind
     let fileURL: URL
-    let package: LoadedModelPackage
+    var package: LoadedModelPackage
 }
 
 struct ProfileSample: Identifiable, Sendable {
@@ -99,7 +131,8 @@ struct ComparisonResult: Sendable {
 
 struct AnalysisConfig: Sendable {
     var blueHueRange: ClosedRange<Float> = 170 ... 270
-    var redHueRanges: [ClosedRange<Float>] = [0 ... 30, 330 ... 360]
+    var redHueLowMax: Float = 30
+    var redHueHighMin: Float = 330
 
     var minSaturation: Float = 0.08
     var minValue: Float = 0.05
@@ -115,6 +148,10 @@ struct AnalysisConfig: Sendable {
 
     var profileBinCount: Int = 120
     var profileSmoothingWindow: Int = 2
+
+    var redHueRanges: [ClosedRange<Float>] {
+        [0 ... redHueLowMax, redHueHighMin ... 360]
+    }
 }
 
 enum PoCError: LocalizedError {

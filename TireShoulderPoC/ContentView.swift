@@ -20,6 +20,14 @@ struct ContentView: View {
                     actionSection
                     statusSection
 
+                    if let newInput = appModel.newInput {
+                        DebugInspectorView(kind: .new, input: newInput)
+                    }
+
+                    if let usedInput = appModel.usedInput {
+                        DebugInspectorView(kind: .used, input: usedInput)
+                    }
+
                     if let overlayScene = appModel.overlayScene {
                         GroupBox("3D重ね合わせ") {
                             SceneKitOverlayView(scene: overlayScene)
@@ -128,13 +136,19 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(appModel.isBusy || appModel.newInput == nil || appModel.usedInput == nil)
+                .disabled(appModel.isBusy || !appModel.canCompare)
 
                 Button("リセット", role: .destructive) {
                     appModel.reset()
                 }
                 .buttonStyle(.bordered)
                 .disabled(appModel.isBusy)
+            }
+
+            if !appModel.canCompare {
+                Text("比較は各モデルで青/赤ともに最低 \(appModel.config.minimumMaskPoints) 点を満たした後に有効化されます。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             if appModel.isBusy {
