@@ -303,6 +303,8 @@ enum USDZLoader {
             warnings.append("UVなし三角形のため画像テクスチャを未サンプリング: \(skippedNoUVTriangles)")
         }
 
+        let cachedStats = summarizeCachedSamples(cachedSamples)
+
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
             bluePoints: reducedBlue.map(Point3.init),
@@ -314,6 +316,16 @@ enum USDZLoader {
             skippedNoUVTriangles: skippedNoUVTriangles,
             materialRecords: materialRecords,
             cachedSamples: cachedSamples,
+            meanR: cachedStats.meanR,
+            meanG: cachedStats.meanG,
+            meanB: cachedStats.meanB,
+            meanHue: cachedStats.meanHue,
+            meanSaturation: cachedStats.meanSaturation,
+            meanValue: cachedStats.meanValue,
+            minSaturationObserved: cachedStats.minSaturationObserved,
+            maxSaturationObserved: cachedStats.maxSaturationObserved,
+            minValueObserved: cachedStats.minValueObserved,
+            maxValueObserved: cachedStats.maxValueObserved,
             warnings: warnings
         )
     }
@@ -355,7 +367,72 @@ enum USDZLoader {
             skippedNoUVTriangles: package.skippedNoUVTriangles,
             materialRecords: package.materialRecords,
             cachedSamples: package.cachedSamples,
+            meanR: package.meanR,
+            meanG: package.meanG,
+            meanB: package.meanB,
+            meanHue: package.meanHue,
+            meanSaturation: package.meanSaturation,
+            meanValue: package.meanValue,
+            minSaturationObserved: package.minSaturationObserved,
+            maxSaturationObserved: package.maxSaturationObserved,
+            minValueObserved: package.minValueObserved,
+            maxValueObserved: package.maxValueObserved,
             warnings: warnings
+        )
+    }
+
+    private static func summarizeCachedSamples(_ samples: [CachedCentroidSample]) -> (
+        meanR: Float,
+        meanG: Float,
+        meanB: Float,
+        meanHue: Float,
+        meanSaturation: Float,
+        meanValue: Float,
+        minSaturationObserved: Float,
+        maxSaturationObserved: Float,
+        minValueObserved: Float,
+        maxValueObserved: Float
+    ) {
+        guard !samples.isEmpty else {
+            return (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        }
+
+        var sumR: Float = 0
+        var sumG: Float = 0
+        var sumB: Float = 0
+        var sumHue: Float = 0
+        var sumSaturation: Float = 0
+        var sumValue: Float = 0
+        var minSaturation = Float.greatestFiniteMagnitude
+        var maxSaturation = -Float.greatestFiniteMagnitude
+        var minValue = Float.greatestFiniteMagnitude
+        var maxValue = -Float.greatestFiniteMagnitude
+
+        for sample in samples {
+            sumR += sample.rgb.x
+            sumG += sample.rgb.y
+            sumB += sample.rgb.z
+            sumHue += sample.hsv.hue
+            sumSaturation += sample.hsv.saturation
+            sumValue += sample.hsv.value
+            minSaturation = min(minSaturation, sample.hsv.saturation)
+            maxSaturation = max(maxSaturation, sample.hsv.saturation)
+            minValue = min(minValue, sample.hsv.value)
+            maxValue = max(maxValue, sample.hsv.value)
+        }
+
+        let count = Float(samples.count)
+        return (
+            meanR: sumR / count,
+            meanG: sumG / count,
+            meanB: sumB / count,
+            meanHue: sumHue / count,
+            meanSaturation: sumSaturation / count,
+            meanValue: sumValue / count,
+            minSaturationObserved: minSaturation,
+            maxSaturationObserved: maxSaturation,
+            minValueObserved: minValue,
+            maxValueObserved: maxValue
         )
     }
 

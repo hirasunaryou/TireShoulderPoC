@@ -103,6 +103,16 @@ struct LoadedModelPackage: Sendable {
     let skippedNoUVTriangles: Int
     let materialRecords: [MaterialInspectionRecord]
     let cachedSamples: [CachedCentroidSample]
+    let meanR: Float
+    let meanG: Float
+    let meanB: Float
+    let meanHue: Float
+    let meanSaturation: Float
+    let meanValue: Float
+    let minSaturationObserved: Float
+    let maxSaturationObserved: Float
+    let minValueObserved: Float
+    let maxValueObserved: Float
     let warnings: [String]
 }
 
