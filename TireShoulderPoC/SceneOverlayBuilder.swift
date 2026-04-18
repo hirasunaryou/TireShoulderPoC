@@ -36,6 +36,52 @@ enum SceneOverlayBuilder {
         return overlayScene
     }
 
+    static func makeInspectorScene(modelURL: URL,
+                                   package: LoadedModelPackage,
+                                   showBlue: Bool,
+                                   showRed: Bool) throws -> SCNScene {
+        let rawScene: SCNScene
+        do {
+            rawScene = try SCNScene(url: modelURL, options: nil)
+        } catch {
+            throw PoCError.sceneLoadFailed(error.localizedDescription)
+        }
+
+        let scene = SCNScene()
+        let rawContainer = SCNNode()
+        cloneChildren(from: rawScene.rootNode, to: rawContainer)
+        applyOpacityRecursively(node: rawContainer, opacity: 0.92)
+        scene.rootNode.addChildNode(rawContainer)
+
+        if showBlue {
+            scene.rootNode.addChildNode(pointCloudNode(points: package.bluePoints.map(\.simd), color: .systemBlue))
+        }
+        if showRed {
+            scene.rootNode.addChildNode(pointCloudNode(points: package.redPoints.map(\.simd), color: .systemRed))
+        }
+
+        addAxisGuide(to: scene.rootNode)
+        return scene
+    }
+
+    private static func pointCloudNode(points: [SIMD3<Float>], color: UIColor) -> SCNNode {
+        let node = SCNNode()
+        let pointRadius: CGFloat = 0.0006
+
+        // PoC用途のため、描画コストより視認性を優先してシンプルな球メッシュで表示する。
+        let sphere = SCNSphere(radius: pointRadius)
+        sphere.segmentCount = 8
+        sphere.firstMaterial?.diffuse.contents = color
+        sphere.firstMaterial?.lightingModel = .constant
+
+        for point in points {
+            let pointNode = SCNNode(geometry: sphere)
+            pointNode.simdPosition = point
+            node.addChildNode(pointNode)
+        }
+        return node
+    }
+
     private static func cloneChildren(from root: SCNNode, to destination: SCNNode) {
         for child in root.childNodes {
             destination.addChildNode(child.clone())

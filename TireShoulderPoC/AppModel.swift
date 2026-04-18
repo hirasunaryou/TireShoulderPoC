@@ -13,7 +13,17 @@ final class AppModel: ObservableObject {
     @Published var isBusy = false
     @Published var exportedCSVURL: URL?
 
-    let config = AnalysisConfig()
+    // デバッグUIから直接しきい値をいじれるように可変の設定として公開する。
+    @Published var config = AnalysisConfig()
+
+    var canCompare: Bool {
+        guard let newInput, let usedInput else { return false }
+        let minPoints = config.minimumMaskPoints
+        return newInput.package.bluePoints.count >= minPoints
+            && newInput.package.redPoints.count >= minPoints
+            && usedInput.package.bluePoints.count >= minPoints
+            && usedInput.package.redPoints.count >= minPoints
+    }
 
     func importModel(kind: ModelKind, from pickedURL: URL) async {
         isBusy = true
@@ -40,7 +50,7 @@ final class AppModel: ObservableObject {
                 usedInput = input
             }
 
-            statusMessage = "\(kind.rawValue) 読込完了: 青 \(package.bluePoints.count)点 / 赤 \(package.redPoints.count)点 / 総サンプル \(package.totalSamples)"
+            statusMessage = makeImportSummary(kind: kind, package: package)
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "読み込みに失敗しました。"
@@ -49,9 +59,29 @@ final class AppModel: ObservableObject {
         isBusy = false
     }
 
+    func reextractMasks(kind: ModelKind) {
+        switch kind {
+        case .new:
+            guard var input = newInput else { return }
+            input.package = USDZLoader.reextractMasks(from: input.package, config: config)
+            newInput = input
+            statusMessage = "新品: キャッシュ済みサンプルから再抽出しました。青 \(input.package.bluePoints.count) / 赤 \(input.package.redPoints.count)"
+        case .used:
+            guard var input = usedInput else { return }
+            input.package = USDZLoader.reextractMasks(from: input.package, config: config)
+            usedInput = input
+            statusMessage = "走行品: キャッシュ済みサンプルから再抽出しました。青 \(input.package.bluePoints.count) / 赤 \(input.package.redPoints.count)"
+        }
+    }
+
     func runComparison() async {
         guard let newInput, let usedInput else {
             errorMessage = "新品と走行品の両方を先に読み込んでください。"
+            return
+        }
+
+        guard canCompare else {
+            errorMessage = "比較には青/赤ともに最低 \(config.minimumMaskPoints) 点が必要です。まずデバッグしきい値を調整してください。"
             return
         }
 
@@ -112,5 +142,13 @@ final class AppModel: ObservableObject {
         exportedCSVURL = nil
         errorMessage = nil
         statusMessage = "新品と走行品のUSDZを読み込んでください。"
+    }
+
+    private func makeImportSummary(kind: ModelKind, package: LoadedModelPackage) -> String {
+        var line = "\(kind.rawValue) 読込完了: blue \(package.bluePoints.count) / red \(package.redPoints.count), rawBlue \(package.rawBlueCount), rawRed \(package.rawRedCount), samples \(package.totalSamples)"
+        if !package.warnings.isEmpty {
+            line += "（警告 \(package.warnings.count) 件）"
+        }
+        return line
     }
 }
