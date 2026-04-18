@@ -22,10 +22,12 @@ struct ContentView: View {
 
                     if let newInput = appModel.newInput {
                         DebugInspectorView(kind: .new, input: newInput)
+                        MaterialTypeInspectorSupplementView(input: newInput)
                     }
 
                     if let usedInput = appModel.usedInput {
                         DebugInspectorView(kind: .used, input: usedInput)
+                        MaterialTypeInspectorSupplementView(input: usedInput)
                     }
 
                     if let overlayScene = appModel.overlayScene {
@@ -316,5 +318,40 @@ private struct MetricCell: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct MaterialTypeInspectorSupplementView: View {
+    let input: ModelInput
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Material Inspection")
+                .font(.subheadline.bold())
+
+            ForEach(input.package.materialRecords) { record in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("node=\(record.nodeName), geo=\(record.geometryName), matIdx=\(record.materialIndex)")
+                    optionalLine(label: "diffuseType", value: record.diffuseType)
+                    optionalLine(label: "emissionType", value: record.emissionType)
+                    optionalLine(label: "multiplyType", value: record.multiplyType)
+                    optionalLine(label: "selfIlluminationType", value: record.selfIlluminationType)
+                    optionalLine(label: "transparentType", value: record.transparentType)
+                    optionalLine(label: "metalnessType", value: record.metalnessType)
+                    optionalLine(label: "roughnessType", value: record.roughnessType)
+                }
+                .font(.caption)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func optionalLine(label: String, value: String?) -> some View {
+        if let value {
+            Text("\(label)=\(value)")
+        }
     }
 }
