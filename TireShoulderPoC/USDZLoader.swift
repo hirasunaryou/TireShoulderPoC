@@ -1,4 +1,5 @@
 import Foundation
+import ModelIO
 import SceneKit
 import UIKit
 import simd
@@ -10,6 +11,16 @@ private enum MaskColor {
 }
 
 private struct TextureSampler {
+    private enum MaterialChannel: String, CaseIterable {
+        case diffuse
+        case emission
+        case multiply
+        case selfIllumination
+        case transparent
+        case metalness
+        case roughness
+    }
+
     private enum Mode {
         case image(width: Int, height: Int, pixels: [UInt8])
         case flat(SIMD3<Float>)
@@ -23,20 +34,23 @@ private struct TextureSampler {
     private let mode: Mode
 
     init(material: SCNMaterial?) {
-        if let cgImage = TextureSampler.extractCGImage(from: material),
-           let prepared = TextureSampler.prepareRGBA(cgImage: cgImage) {
+        // NOTE: 現在は SceneKit material のみをサンプル対象にしている。
+        // 将来は Model I/O の baseColor（MDLMaterialSemantic.baseColor）を優先サンプルし、
+        // USDZ の PBR パイプラインに合わせたマスク抽出へ切り替える想定。
+        if let imageHit = TextureSampler.extractCGImage(from: material),
+           let prepared = TextureSampler.prepareRGBA(cgImage: imageHit.cgImage) {
             self.mode = .image(width: prepared.width, height: prepared.height, pixels: prepared.pixels)
             self.hasImageTexture = true
             self.hasFlatColor = false
-            self.sourceSummary = "image(\(prepared.width)x\(prepared.height))"
+            self.sourceSummary = "image[\(imageHit.channel.rawValue)](\(prepared.width)x\(prepared.height))"
             return
         }
 
-        if let color = TextureSampler.extractFlatColor(from: material) {
-            self.mode = .flat(color)
+        if let flatHit = TextureSampler.extractFlatColor(from: material) {
+            self.mode = .flat(flatHit.color)
             self.hasImageTexture = false
             self.hasFlatColor = true
-            self.sourceSummary = "flatColor"
+            self.sourceSummary = "flatColor[\(flatHit.channel.rawValue)]"
             return
         }
 
@@ -71,28 +85,23 @@ private struct TextureSampler {
         return rgb
     }
 
-    private static func extractCGImage(from material: SCNMaterial?) -> CGImage? {
-        let candidates: [Any?] = [
-            material?.diffuse.contents,
-            material?.emission.contents,
-            material?.multiply.contents
-        ]
-
-        for candidate in candidates {
+    private static func extractCGImage(from material: SCNMaterial?) -> (channel: MaterialChannel, cgImage: CGImage)? {
+        for channel in MaterialChannel.allCases {
+            let candidate = contents(for: channel, in: material)
             switch candidate {
             case let image as UIImage:
                 if let cgImage = image.cgImage {
-                    return cgImage
+                    return (channel, cgImage)
                 }
             case let cgImage as CGImage:
-                return cgImage
+                return (channel, cgImage)
             case let url as URL:
                 if let image = UIImage(contentsOfFile: url.path), let cgImage = image.cgImage {
-                    return cgImage
+                    return (channel, cgImage)
                 }
             case let path as String:
                 if let image = UIImage(contentsOfFile: path), let cgImage = image.cgImage {
-                    return cgImage
+                    return (channel, cgImage)
                 }
             default:
                 continue
@@ -102,20 +111,16 @@ private struct TextureSampler {
         return nil
     }
 
-    private static func extractFlatColor(from material: SCNMaterial?) -> SIMD3<Float>? {
-        let candidates: [Any?] = [
-            material?.diffuse.contents,
-            material?.emission.contents
-        ]
-
-        for candidate in candidates {
+    private static func extractFlatColor(from material: SCNMaterial?) -> (channel: MaterialChannel, color: SIMD3<Float>)? {
+        for channel in MaterialChannel.allCases {
+            let candidate = contents(for: channel, in: material)
             if let color = candidate as? UIColor {
                 var red: CGFloat = 0
                 var green: CGFloat = 0
                 var blue: CGFloat = 0
                 var alpha: CGFloat = 0
                 if color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
-                    return SIMD3<Float>(Float(red), Float(green), Float(blue))
+                    return (channel, SIMD3<Float>(Float(red), Float(green), Float(blue)))
                 }
             }
         }
@@ -151,6 +156,25 @@ private struct TextureSampler {
 
         return success ? (width, height, pixels) : nil
     }
+
+    private static func contents(for channel: MaterialChannel, in material: SCNMaterial?) -> Any? {
+        switch channel {
+        case .diffuse:
+            return material?.diffuse.contents
+        case .emission:
+            return material?.emission.contents
+        case .multiply:
+            return material?.multiply.contents
+        case .selfIllumination:
+            return material?.selfIllumination.contents
+        case .transparent:
+            return material?.transparent.contents
+        case .metalness:
+            return material?.metalness.contents
+        case .roughness:
+            return material?.roughness.contents
+        }
+    }
 }
 
 enum USDZLoader {
@@ -176,7 +200,16 @@ enum USDZLoader {
         var totalSamples = 0
         var skippedNoUVTriangles = 0
         var materialRecords: [MaterialInspectionRecord] = []
+        var modelIOMaterialRecords: [ModelIOMaterialInspectionRecord] = []
         var cachedSamples: [CachedCentroidSample] = []
+        var warnings: [String] = []
+
+        do {
+            modelIOMaterialRecords = try inspectModelIOMaterials(url: url)
+        } catch {
+            // デバッグ情報の補助経路なので、ここが失敗しても取り込みは継続する。
+            warnings.append("Model I/O inspection failed: \(error.localizedDescription)")
+        }
 
         for node in geometryNodes {
             guard let geometry = node.geometry else { continue }
@@ -274,7 +307,23 @@ enum USDZLoader {
                     hasVertexColor: hasVertexColor,
                     triangleCount: triangleCount,
                     sampledTriangleCount: sampledTriangleCount,
-                    textureSourceSummary: sampler.sourceSummary
+                    textureSourceSummary: sampler.sourceSummary,
+                    lightingModelName: material?.lightingModel.rawValue ?? "(unknown)",
+                    diffuseContentType: runtimeTypeName(material?.diffuse.contents),
+                    emissionContentType: runtimeTypeName(material?.emission.contents),
+                    multiplyContentType: runtimeTypeName(material?.multiply.contents),
+                    selfIlluminationContentType: runtimeTypeName(material?.selfIllumination.contents),
+                    transparentContentType: runtimeTypeName(material?.transparent.contents),
+                    metalnessContentType: runtimeTypeName(material?.metalness.contents),
+                    roughnessContentType: runtimeTypeName(material?.roughness.contents),
+                    diffuseTransformIdentity: SCNMatrix4EqualToMatrix4(material?.diffuse.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    emissionTransformIdentity: SCNMatrix4EqualToMatrix4(material?.emission.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    multiplyTransformIdentity: SCNMatrix4EqualToMatrix4(material?.multiply.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    selfIlluminationTransformIdentity: SCNMatrix4EqualToMatrix4(material?.selfIllumination.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    transparentTransformIdentity: SCNMatrix4EqualToMatrix4(material?.transparent.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    metalnessTransformIdentity: SCNMatrix4EqualToMatrix4(material?.metalness.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    roughnessTransformIdentity: SCNMatrix4EqualToMatrix4(material?.roughness.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
+                    transparency: material?.transparency ?? 1
                 )
                 materialRecords.append(record)
             }
@@ -285,7 +334,6 @@ enum USDZLoader {
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
-        var warnings: [String] = []
         if reducedBlue.count < config.minimumMaskPoints {
             warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(rawBlueCount), min=\(config.minimumMaskPoints)")
         }
@@ -295,6 +343,7 @@ enum USDZLoader {
         if skippedNoUVTriangles > 0 {
             warnings.append("UVなし三角形のため画像テクスチャを未サンプリング: \(skippedNoUVTriangles)")
         }
+        let cachedDiagnostics = makeCachedDiagnostics(from: cachedSamples)
 
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
@@ -306,7 +355,9 @@ enum USDZLoader {
             rawRedCount: rawRedCount,
             skippedNoUVTriangles: skippedNoUVTriangles,
             materialRecords: materialRecords,
+            modelIOMaterialRecords: modelIOMaterialRecords,
             cachedSamples: cachedSamples,
+            cachedDiagnostics: cachedDiagnostics,
             warnings: warnings
         )
     }
@@ -347,8 +398,113 @@ enum USDZLoader {
             rawRedCount: redPoints.count,
             skippedNoUVTriangles: package.skippedNoUVTriangles,
             materialRecords: package.materialRecords,
+            modelIOMaterialRecords: package.modelIOMaterialRecords,
             cachedSamples: package.cachedSamples,
+            cachedDiagnostics: package.cachedDiagnostics,
             warnings: warnings
+        )
+    }
+
+    private static func runtimeTypeName(_ value: Any?) -> String {
+        guard let value else { return "nil" }
+        return String(describing: type(of: value))
+    }
+
+    private static func inspectModelIOMaterials(url: URL) throws -> [ModelIOMaterialInspectionRecord] {
+        let asset = MDLAsset(url: url)
+        var records: [ModelIOMaterialInspectionRecord] = []
+        for index in 0..<asset.count {
+            guard let object = asset.object(at: index) else { continue }
+            collectModelIOMaterials(from: object, records: &records)
+        }
+        return records
+    }
+
+    private static func collectModelIOMaterials(from object: MDLObject,
+                                                records: inout [ModelIOMaterialInspectionRecord]) {
+        if let mesh = object as? MDLMesh,
+           let submeshContainer = mesh.submeshes {
+            for submeshIndex in 0..<submeshContainer.count {
+                guard let submesh = submeshContainer.object(at: submeshIndex) as? MDLSubmesh,
+                      let material = submesh.material else { continue }
+                let baseColor = material.property(with: .baseColor)
+                records.append(
+                    ModelIOMaterialInspectionRecord(
+                        meshName: mesh.name.isEmpty ? "(no-mesh-name)" : mesh.name,
+                        submeshIndex: submeshIndex,
+                        materialName: material.name ?? "(no-material-name)",
+                        semanticSummary: materialPropertiesSummary(material: material),
+                        hasBaseColor: baseColor != nil,
+                        baseColorKind: describeModelIOBaseColor(baseColor)
+                    )
+                )
+            }
+        }
+
+        if let children = object.children {
+            for childIndex in 0..<children.count {
+                guard let child = children.object(at: childIndex) as? MDLObject else { continue }
+                collectModelIOMaterials(from: child, records: &records)
+            }
+        }
+    }
+
+    private static func materialPropertiesSummary(material: MDLMaterial) -> String {
+        var names: [String] = []
+        for case let property as MDLMaterialProperty in material {
+            names.append(String(describing: property.semantic))
+        }
+        return names.isEmpty ? "(none)" : names.joined(separator: ", ")
+    }
+
+    private static func describeModelIOBaseColor(_ property: MDLMaterialProperty?) -> String {
+        guard let property else { return "none" }
+        switch property.type {
+        case .texture:
+            return "texture"
+        case .URL:
+            return "url"
+        case .string:
+            return "string-path"
+        case .float, .float2, .float3, .float4, .color:
+            return "float/color"
+        default:
+            return "other(\(property.type.rawValue))"
+        }
+    }
+
+    private static func makeCachedDiagnostics(from samples: [CachedCentroidSample]) -> CachedSampleDiagnostics? {
+        guard !samples.isEmpty else { return nil }
+
+        let count = Float(samples.count)
+        var rgbSum = SIMD3<Float>(repeating: 0)
+        var hsvSum = SIMD3<Float>(repeating: 0)
+        var minSaturation = Float.greatestFiniteMagnitude
+        var maxSaturation: Float = 0
+        var minValue = Float.greatestFiniteMagnitude
+        var maxValue: Float = 0
+        var hueBuckets = [Int](repeating: 0, count: 12) // 30度刻み
+
+        for sample in samples {
+            rgbSum += sample.rgb
+            hsvSum += SIMD3<Float>(sample.hsv.hue, sample.hsv.saturation, sample.hsv.value)
+            minSaturation = min(minSaturation, sample.hsv.saturation)
+            maxSaturation = max(maxSaturation, sample.hsv.saturation)
+            minValue = min(minValue, sample.hsv.value)
+            maxValue = max(maxValue, sample.hsv.value)
+
+            let bucket = Int(sample.hsv.hue / 30).clamped(to: 0...11)
+            hueBuckets[bucket] += 1
+        }
+
+        return CachedSampleDiagnostics(
+            meanRGB: rgbSum / count,
+            meanHSV: hsvSum / count,
+            minSaturation: minSaturation,
+            maxSaturation: maxSaturation,
+            minValue: minValue,
+            maxValue: maxValue,
+            hueBucketCounts: hueBuckets
         )
     }
 
@@ -533,5 +689,11 @@ enum USDZLoader {
         default:
             return 0
         }
+    }
+}
+
+private extension Int {
+    func clamped(to range: ClosedRange<Int>) -> Int {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }

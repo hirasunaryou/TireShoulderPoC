@@ -63,6 +63,8 @@ struct DebugInspectorView: View {
                 }
 
                 materialRecordSection
+                modelIOMaterialRecordSection
+                cachedDiagnosticsSection
             }
         }
         .onAppear { refreshInspectorScene() }
@@ -94,6 +96,9 @@ struct DebugInspectorView: View {
                     Text("node=\(record.nodeName), geo=\(record.geometryName), matIdx=\(record.materialIndex)")
                     Text("UV=\(record.hasUV ? "Y" : "N"), VColor=\(record.hasVertexColor ? "Y" : "N"), triangles=\(record.triangleCount), sampled=\(record.sampledTriangleCount)")
                     Text("texture=\(record.textureSourceSummary)")
+                    Text("lighting=\(record.lightingModelName), transparency=\(record.transparency, specifier: "%.3f")")
+                    Text("types d/e/m/si/t/me/ro = \(record.diffuseContentType) / \(record.emissionContentType) / \(record.multiplyContentType) / \(record.selfIlluminationContentType) / \(record.transparentContentType) / \(record.metalnessContentType) / \(record.roughnessContentType)")
+                    Text("transform identity d/e/m/si/t/me/ro = \(yn(record.diffuseTransformIdentity))/\(yn(record.emissionTransformIdentity))/\(yn(record.multiplyTransformIdentity))/\(yn(record.selfIlluminationTransformIdentity))/\(yn(record.transparentTransformIdentity))/\(yn(record.metalnessTransformIdentity))/\(yn(record.roughnessTransformIdentity))")
                 }
                 .font(.caption)
                 .padding(8)
@@ -101,6 +106,50 @@ struct DebugInspectorView: View {
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
+    }
+
+    private var modelIOMaterialRecordSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Model I/O Inspection")
+                .font(.subheadline.bold())
+
+            if input.package.modelIOMaterialRecords.isEmpty {
+                Text("No Model I/O material records.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(input.package.modelIOMaterialRecords) { record in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("mesh=\(record.meshName), submesh=\(record.submeshIndex), mat=\(record.materialName)")
+                        Text("semantics=\(record.semanticSummary)")
+                        Text("baseColor exists=\(record.hasBaseColor ? "Y" : "N"), kind=\(record.baseColorKind)")
+                    }
+                    .font(.caption)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+    }
+
+    private var cachedDiagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Cached Sample Diagnostics")
+                .font(.subheadline.bold())
+
+            if let diagnostics = input.package.cachedDiagnostics {
+                Text("mean RGB = (\(diagnostics.meanRGB.x, specifier: "%.3f"), \(diagnostics.meanRGB.y, specifier: "%.3f"), \(diagnostics.meanRGB.z, specifier: "%.3f"))")
+                Text("mean HSV = (\(diagnostics.meanHSV.x, specifier: "%.1f"), \(diagnostics.meanHSV.y, specifier: "%.3f"), \(diagnostics.meanHSV.z, specifier: "%.3f"))")
+                Text("sat min/max = \(diagnostics.minSaturation, specifier: "%.3f") / \(diagnostics.maxSaturation, specifier: "%.3f")")
+                Text("val min/max = \(diagnostics.minValue, specifier: "%.3f") / \(diagnostics.maxValue, specifier: "%.3f")")
+                Text("hue buckets(30°): \(diagnostics.hueBucketCounts.map(String.init).joined(separator: ", "))")
+            } else {
+                Text("No cached samples.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
     }
 
 
@@ -130,6 +179,10 @@ struct DebugInspectorView: View {
                 .font(.caption)
             Slider(value: value, in: range)
         }
+    }
+
+    private func yn(_ value: Bool) -> String {
+        value ? "Y" : "N"
     }
 
     private func refreshInspectorScene() {
