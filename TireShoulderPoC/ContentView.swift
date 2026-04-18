@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var appModel: AppModel
     @State private var activeImportKind: ModelKind?
+    @State private var isImporterPresented = false
 
     private var usdzType: UTType {
         UTType(filenameExtension: "usdz") ?? .data
@@ -43,22 +44,32 @@ struct ContentView: View {
             }
             .navigationTitle("Tire Shoulder PoC")
             .fileImporter(
-                isPresented: Binding(
-                    get: { activeImportKind != nil },
-                    set: { if !$0 { activeImportKind = nil } }
-                ),
+                isPresented: $isImporterPresented,
                 allowedContentTypes: [usdzType],
                 allowsMultipleSelection: false
             ) { result in
-                let selectedKind = activeImportKind
-                activeImportKind = nil
+                guard let selectedKind = activeImportKind else {
+                    appModel.errorMessage = "読込種別が失われました。もう一度選択してください。"
+                    return
+                }
+
+                defer {
+                    activeImportKind = nil
+                    isImporterPresented = false
+                }
 
                 switch result {
                 case .success(let urls):
-                    guard let url = urls.first, let selectedKind else { return }
+                    guard let url = urls.first else {
+                        appModel.errorMessage = "ファイルが選択されませんでした。"
+                        return
+                    }
+
+                    appModel.statusMessage = "\(selectedKind.rawValue) USDZを読込中..."
                     Task {
                         await appModel.importModel(kind: selectedKind, from: url)
                     }
+
                 case .failure(let error):
                     appModel.errorMessage = error.localizedDescription
                 }
@@ -88,6 +99,7 @@ struct ContentView: View {
                     actionTitle: "新品USDZを選ぶ"
                 ) {
                     activeImportKind = .new
+                    isImporterPresented = true
                 }
 
                 LoadCard(
@@ -98,6 +110,7 @@ struct ContentView: View {
                     actionTitle: "走行品USDZを選ぶ"
                 ) {
                     activeImportKind = .used
+                    isImporterPresented = true
                 }
             }
         }

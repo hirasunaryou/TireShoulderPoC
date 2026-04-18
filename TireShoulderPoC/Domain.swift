@@ -98,15 +98,16 @@ struct ComparisonResult: Sendable {
 }
 
 struct AnalysisConfig: Sendable {
-    var blueHueRange: ClosedRange<Float> = 200 ... 250
-    var redHueRanges: [ClosedRange<Float>] = [0 ... 18, 345 ... 360]
-    var minSaturation: Float = 0.35
-    var minValue: Float = 0.15
+    var blueHueRange: ClosedRange<Float> = 170 ... 270
+    var redHueRanges: [ClosedRange<Float>] = [0 ... 30, 330 ... 360]
+
+    var minSaturation: Float = 0.08
+    var minValue: Float = 0.05
 
     var maskVoxelSizeMeters: Float = 0.0015
     var profileVoxelSizeMeters: Float = 0.0015
 
-    var minimumMaskPoints: Int = 120
+    var minimumMaskPoints: Int = 20
     var icpSampleLimit: Int = 1_200
     var icpMaxIterations: Int = 18
     var icpTrimFraction: Float = 0.80

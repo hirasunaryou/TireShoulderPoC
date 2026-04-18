@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
         exportedCSVURL = nil
         analysisResult = nil
         overlayScene = nil
+        statusMessage = "\(kind.rawValue) USDZを解析中..."
 
         do {
             let localURL = try LocalFileStore.importCopy(from: pickedURL, preferredName: pickedURL.lastPathComponent)

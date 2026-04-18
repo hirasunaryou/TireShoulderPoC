@@ -212,16 +212,26 @@ enum USDZLoader {
             }
         }
 
+        let rawBlueCount = bluePoints.count
+        let rawRedCount = redPoints.count
+
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
         guard reducedBlue.count >= config.minimumMaskPoints else {
-            throw PoCError.maskExtractionFailed("青点は \(reducedBlue.count) 点でした。青テープをもっと広く、非対称に貼るか、照明を改善してください。")
+            throw PoCError.maskExtractionFailed(
+                "青点は \(reducedBlue.count) 点でした。rawBlue=\(rawBlueCount), rawRed=\(rawRedCount), totalSamples=\(totalSamples)。" +
+                " しきい値を緩めるか、Scaniverse USDZ のテクスチャ取得形式を確認してください。"
+            )
         }
 
         guard reducedRed.count >= config.minimumMaskPoints else {
-            throw PoCError.maskExtractionFailed("赤点は \(reducedRed.count) 点でした。赤テープ幅を広げるか、色の彩度を上げてください。")
+            throw PoCError.maskExtractionFailed(
+                "赤点は \(reducedRed.count) 点でした。rawBlue=\(rawBlueCount), rawRed=\(rawRedCount), totalSamples=\(totalSamples)。" +
+                " しきい値を緩めるか、テープ色・照明を見直してください。"
+            )
         }
+
 
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
