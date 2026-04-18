@@ -24,6 +24,20 @@ private struct TextureSampler {
 
     private let mode: Mode
 
+    init(cgImage: CGImage) {
+        if let prepared = TextureSampler.prepareRGBA(cgImage: cgImage) {
+            self.mode = .image(width: prepared.width, height: prepared.height, pixels: prepared.pixels)
+            self.hasImageTexture = true
+            self.hasFlatColor = false
+            self.sourceSummary = "image(\(prepared.width)x\(prepared.height))"
+        } else {
+            self.mode = .unavailable
+            self.hasImageTexture = false
+            self.hasFlatColor = false
+            self.sourceSummary = "unavailable"
+        }
+    }
+
     init(material: SCNMaterial?) {
         if let cgImage = TextureSampler.extractCGImage(from: material),
            let prepared = TextureSampler.prepareRGBA(cgImage: cgImage) {
@@ -178,6 +192,7 @@ enum USDZLoader {
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         // SceneKitの既存抽出処理とは独立した最小診断としてModel I/O情報を取得する。
         let modelIOMaterialRecords = inspectModelIOMaterials(url: url)
+        let resolvedModelIOBaseColorTextures = loadResolvedModelIOBaseColorTextures(url: url)
 
         let scene: SCNScene
         do {
@@ -256,6 +271,16 @@ enum USDZLoader {
                             skippedNoUVTriangles += 1
                             sampledRGB = nil
                         }
+                    } else if hasUV,
+                              i0 < uvs.count,
+                              i1 < uvs.count,
+                              i2 < uvs.count,
+                              let fallbackSampler = resolvedModelIOBaseColorTextureSampler(
+                                textures: resolvedModelIOBaseColorTextures,
+                                elementIndex: elementIndex
+                              ) {
+                        let centroidUV = (uvs[i0] + uvs[i1] + uvs[i2]) / 3
+                        sampledRGB = fallbackSampler.sampleImage(at: centroidUV)
                     } else if let flatColor = sampler.flatColor {
                         sampledRGB = flatColor
                     } else {
@@ -450,6 +475,39 @@ enum USDZLoader {
         }
 
         return records
+    }
+
+    private static func loadResolvedModelIOBaseColorTextures(url: URL) -> [TextureSampler] {
+        let asset = MDLAsset(url: url)
+        asset.loadTextures()
+        let meshes = asset.childObjects(of: MDLMesh.self) as? [MDLMesh] ?? []
+        var textures: [TextureSampler] = []
+
+        for mesh in meshes {
+            let submeshes = mesh.submeshes as? [Any] ?? []
+            for anySubmesh in submeshes {
+                guard let material = (anySubmesh as? MDLSubmesh)?.material,
+                      let baseColor = material.property(with: .baseColor),
+                      let texture = baseColor.textureSamplerValue?.texture,
+                      let cgImage = texture.imageFromTexture() else {
+                    continue
+                }
+                textures.append(TextureSampler(cgImage: cgImage))
+            }
+        }
+
+        return textures
+    }
+
+    private static func resolvedModelIOBaseColorTextureSampler(
+        textures: [TextureSampler],
+        elementIndex: Int
+    ) -> TextureSampler? {
+        if textures.count == 1 {
+            return textures[0]
+        }
+        guard elementIndex >= 0, elementIndex < textures.count else { return nil }
+        return textures[elementIndex]
     }
 
     private static func summarizeCachedSamples(_ samples: [CachedCentroidSample]) -> (
