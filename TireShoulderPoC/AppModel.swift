@@ -12,8 +12,9 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isBusy = false
     @Published var exportedCSVURL: URL?
+    @Published var debugSceneByKind: [ModelKind: SCNScene] = [:]
 
-    let config = AnalysisConfig()
+    @Published var config = AnalysisConfig()
 
     func importModel(kind: ModelKind, from pickedURL: URL) async {
         isBusy = true
@@ -21,6 +22,7 @@ final class AppModel: ObservableObject {
         exportedCSVURL = nil
         analysisResult = nil
         overlayScene = nil
+        debugSceneByKind = [:]
         statusMessage = "\(kind.rawValue) USDZを解析中..."
 
         do {
@@ -40,7 +42,18 @@ final class AppModel: ObservableObject {
                 usedInput = input
             }
 
-            statusMessage = "\(kind.rawValue) 読込完了: 青 \(package.bluePoints.count)点 / 赤 \(package.redPoints.count)点 / 総サンプル \(package.totalSamples)"
+            do {
+                debugSceneByKind[kind] = try SceneOverlayBuilder.makeInspectionScene(
+                    modelURL: localURL,
+                    bluePoints: package.bluePoints,
+                    redPoints: package.redPoints
+                )
+            } catch {
+                debugSceneByKind[kind] = nil
+            }
+
+            let warningText = package.warnings.isEmpty ? "" : " / 警告 \(package.warnings.count)件"
+            statusMessage = "\(kind.rawValue) 読込完了: 青 \(package.bluePoints.count)点 / 赤 \(package.redPoints.count)点 / 総サンプル \(package.totalSamples)\(warningText)"
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "読み込みに失敗しました。"
@@ -52,6 +65,10 @@ final class AppModel: ObservableObject {
     func runComparison() async {
         guard let newInput, let usedInput else {
             errorMessage = "新品と走行品の両方を先に読み込んでください。"
+            return
+        }
+        guard canRunComparison else {
+            errorMessage = "比較には新品/走行品ともに青赤マスク点が最低 \(config.minimumMaskPoints) 点必要です。"
             return
         }
 
@@ -86,6 +103,53 @@ final class AppModel: ObservableObject {
         isBusy = false
     }
 
+    func reextractMasks(kind: ModelKind) {
+        analysisResult = nil
+        overlayScene = nil
+        exportedCSVURL = nil
+
+        let existingInput: ModelInput?
+        switch kind {
+        case .new:
+            existingInput = newInput
+        case .used:
+            existingInput = usedInput
+        }
+        guard let existingInput else { return }
+
+        let updatedPackage = USDZLoader.reextractMasks(from: existingInput.package, config: config)
+        let updatedInput = ModelInput(kind: kind, fileURL: existingInput.fileURL, package: updatedPackage)
+
+        do {
+            let debugScene = try SceneOverlayBuilder.makeInspectionScene(
+                modelURL: existingInput.fileURL,
+                bluePoints: updatedPackage.bluePoints,
+                redPoints: updatedPackage.redPoints
+            )
+            debugSceneByKind[kind] = debugScene
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        switch kind {
+        case .new:
+            newInput = updatedInput
+        case .used:
+            usedInput = updatedInput
+        }
+
+        statusMessage = "\(kind.rawValue) マスク再抽出: 青 \(updatedPackage.bluePoints.count) / 赤 \(updatedPackage.redPoints.count)"
+    }
+
+    var canRunComparison: Bool {
+        guard let newInput, let usedInput else { return false }
+        let minPoints = config.minimumMaskPoints
+        return newInput.package.bluePoints.count >= minPoints &&
+        newInput.package.redPoints.count >= minPoints &&
+        usedInput.package.bluePoints.count >= minPoints &&
+        usedInput.package.redPoints.count >= minPoints
+    }
+
     func exportCSV() {
         guard let analysisResult else {
             errorMessage = "比較結果がまだありません。"
@@ -110,6 +174,7 @@ final class AppModel: ObservableObject {
         analysisResult = nil
         overlayScene = nil
         exportedCSVURL = nil
+        debugSceneByKind = [:]
         errorMessage = nil
         statusMessage = "新品と走行品のUSDZを読み込んでください。"
     }
