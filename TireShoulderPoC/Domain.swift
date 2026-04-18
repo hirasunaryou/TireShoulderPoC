@@ -69,6 +69,14 @@ struct MaterialInspectionRecord: Identifiable, Sendable {
     let roughnessType: String?
 }
 
+struct ModelIOMaterialInspectionRecord: Identifiable, Sendable {
+    let id = UUID()
+    let meshName: String
+    let submeshIndex: Int
+    let hasMaterial: Bool
+    let hasBaseColor: Bool
+}
+
 struct Transform4x4: Sendable {
     var values: [Float]
 
@@ -102,6 +110,7 @@ struct LoadedModelPackage: Sendable {
     let rawRedCount: Int
     let skippedNoUVTriangles: Int
     let materialRecords: [MaterialInspectionRecord]
+    let modelIOMaterialRecords: [ModelIOMaterialInspectionRecord]
     let cachedSamples: [CachedCentroidSample]
     let meanR: Float
     let meanG: Float

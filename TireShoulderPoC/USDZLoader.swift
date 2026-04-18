@@ -1,4 +1,5 @@
 import Foundation
+import ModelIO
 import SceneKit
 import UIKit
 import simd
@@ -157,6 +158,9 @@ enum USDZLoader {
     private static let maxCachedSamples = 12_000
 
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
+        // SceneKitの既存抽出処理とは独立した最小診断としてModel I/O情報を取得する。
+        let modelIOMaterialRecords = inspectModelIOMaterials(url: url)
+
         let scene: SCNScene
         do {
             scene = try SCNScene(url: url, options: nil)
@@ -315,6 +319,7 @@ enum USDZLoader {
             rawRedCount: rawRedCount,
             skippedNoUVTriangles: skippedNoUVTriangles,
             materialRecords: materialRecords,
+            modelIOMaterialRecords: modelIOMaterialRecords,
             cachedSamples: cachedSamples,
             meanR: cachedStats.meanR,
             meanG: cachedStats.meanG,
@@ -366,6 +371,7 @@ enum USDZLoader {
             rawRedCount: redPoints.count,
             skippedNoUVTriangles: package.skippedNoUVTriangles,
             materialRecords: package.materialRecords,
+            modelIOMaterialRecords: package.modelIOMaterialRecords,
             cachedSamples: package.cachedSamples,
             meanR: package.meanR,
             meanG: package.meanG,
@@ -379,6 +385,43 @@ enum USDZLoader {
             maxValueObserved: package.maxValueObserved,
             warnings: warnings
         )
+    }
+
+    private static func inspectModelIOMaterials(url: URL) -> [ModelIOMaterialInspectionRecord] {
+        let asset = MDLAsset(url: url)
+        let meshes = asset.childObjects(of: MDLMesh.self) as? [MDLMesh] ?? []
+        var records: [ModelIOMaterialInspectionRecord] = []
+
+        for mesh in meshes {
+            let meshName = mesh.name.isEmpty ? "(no-mesh-name)" : mesh.name
+            let submeshes = mesh.submeshes as? [Any] ?? []
+
+            if submeshes.isEmpty {
+                records.append(
+                    ModelIOMaterialInspectionRecord(
+                        meshName: meshName,
+                        submeshIndex: 0,
+                        hasMaterial: false,
+                        hasBaseColor: false
+                    )
+                )
+                continue
+            }
+
+            for (submeshIndex, anySubmesh) in submeshes.enumerated() {
+                let material = (anySubmesh as? MDLSubmesh)?.material
+                records.append(
+                    ModelIOMaterialInspectionRecord(
+                        meshName: meshName,
+                        submeshIndex: submeshIndex,
+                        hasMaterial: material != nil,
+                        hasBaseColor: material?.property(with: .baseColor) != nil
+                    )
+                )
+            }
+        }
+
+        return records
     }
 
     private static func summarizeCachedSamples(_ samples: [CachedCentroidSample]) -> (
