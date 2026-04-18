@@ -407,6 +407,7 @@ enum USDZLoader {
 
     private static func inspectModelIOMaterials(url: URL) -> [ModelIOMaterialInspectionRecord] {
         let asset = MDLAsset(url: url)
+        asset.loadTextures()
         let meshes = asset.childObjects(of: MDLMesh.self) as? [MDLMesh] ?? []
         var records: [ModelIOMaterialInspectionRecord] = []
 
