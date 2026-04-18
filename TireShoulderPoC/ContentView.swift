@@ -24,12 +24,14 @@ struct ContentView: View {
                         DebugInspectorView(kind: .new, input: newInput)
                         CachedSampleSummaryStatsView(input: newInput)
                         MaterialTypeInspectorSupplementView(input: newInput)
+                        ModelIOInspectionSupplementView(input: newInput)
                     }
 
                     if let usedInput = appModel.usedInput {
                         DebugInspectorView(kind: .used, input: usedInput)
                         CachedSampleSummaryStatsView(input: usedInput)
                         MaterialTypeInspectorSupplementView(input: usedInput)
+                        ModelIOInspectionSupplementView(input: usedInput)
                     }
 
                     if let overlayScene = appModel.overlayScene {
@@ -376,5 +378,36 @@ private struct CachedSampleSummaryStatsView: View {
 
     private func compact(_ value: Float) -> String {
         String(format: "%.3f", value)
+    }
+}
+
+private struct ModelIOInspectionSupplementView: View {
+    let input: ModelInput
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Model I/O Inspection")
+                .font(.subheadline.bold())
+
+            // Keep each row compact so engineers can quickly scan mesh/submesh/material status.
+            ForEach(input.package.modelIOMaterialRecords) { record in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(record.meshName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text("#\(record.submeshIndex)")
+                        .frame(width: 36, alignment: .trailing)
+
+                    Text(record.hasMaterial ? "mat: yes" : "mat: no")
+                        .frame(width: 64, alignment: .leading)
+
+                    Text(record.hasBaseColor ? "base: yes" : "base: no")
+                        .frame(width: 70, alignment: .leading)
+                }
+                .font(.caption)
+            }
+        }
     }
 }
