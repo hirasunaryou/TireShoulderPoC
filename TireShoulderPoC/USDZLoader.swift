@@ -428,6 +428,14 @@ enum USDZLoader {
 
             for (submeshIndex, anySubmesh) in submeshes.enumerated() {
                 let material = (anySubmesh as? MDLSubmesh)?.material
+                let baseColor = material?.property(with: .baseColor)
+                let textureSampler = baseColor?.textureSamplerValue
+                let texture = textureSampler?.texture
+                let hasImageFromTexture = texture?.imageFromTexture() != nil
+                let texelDataCount = texture?.texelDataWithTopLeftOrigin()?.count
+                print(
+                    "[ModelIO.baseColor] mesh=\(meshName) submesh=\(submeshIndex) hasMaterial=\(material != nil) hasBaseColor=\(baseColor != nil) typeRaw=\(baseColor?.type.rawValue ?? -1) url=\(baseColor?.urlValue?.absoluteString ?? "nil") string=\(baseColor?.stringValue ?? "nil") hasSampler=\(textureSampler != nil) hasTexture=\(texture != nil) textureClass=\(texture.map { String(describing: type(of: $0)) } ?? "nil") textureDimensions=\(String(describing: texture?.dimensions)) hasImageFromTexture=\(hasImageFromTexture) texelDataCount=\(texelDataCount.map(String.init) ?? "nil")"
+                )
                 records.append(
                     ModelIOMaterialInspectionRecord(
                         meshName: meshName,
