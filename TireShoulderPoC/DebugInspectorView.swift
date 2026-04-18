@@ -38,6 +38,8 @@ struct DebugInspectorView: View {
                 }
                 .font(.footnote)
 
+                cachedSampleDiagnosticsSection
+
                 if !input.package.warnings.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Warnings")
@@ -63,6 +65,7 @@ struct DebugInspectorView: View {
                 }
 
                 materialRecordSection
+                modelIOMaterialRecordSection
             }
         }
         .onAppear { refreshInspectorScene() }
@@ -86,14 +89,16 @@ struct DebugInspectorView: View {
 
     private var materialRecordSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Material Inspection")
+            Text("SceneKit Material Inspection")
                 .font(.subheadline.bold())
 
             ForEach(input.package.materialRecords) { record in
                 VStack(alignment: .leading, spacing: 2) {
                     Text("node=\(record.nodeName), geo=\(record.geometryName), matIdx=\(record.materialIndex)")
                     Text("UV=\(record.hasUV ? "Y" : "N"), VColor=\(record.hasVertexColor ? "Y" : "N"), triangles=\(record.triangleCount), sampled=\(record.sampledTriangleCount)")
-                    Text("texture=\(record.textureSourceSummary)")
+                    Text("texture=\(record.textureSourceSummary), lighting=\(record.lightingModelName), transparency=\(record.transparency, specifier: "%.3f")")
+                    Text("types D/E/Mul/SI/T/M/R = \(record.diffuseType) / \(record.emissionType) / \(record.multiplyType) / \(record.selfIlluminationType) / \(record.transparentType) / \(record.metalnessType) / \(record.roughnessType)")
+                    Text("transformIdentity D/E/Mul/SI/T/M/R = \(boolText(record.diffuseTransformIsIdentity))/\(boolText(record.emissionTransformIsIdentity))/\(boolText(record.multiplyTransformIsIdentity))/\(boolText(record.selfIlluminationTransformIsIdentity))/\(boolText(record.transparentTransformIsIdentity))/\(boolText(record.metalnessTransformIsIdentity))/\(boolText(record.roughnessTransformIsIdentity))")
                 }
                 .font(.caption)
                 .padding(8)
@@ -101,6 +106,52 @@ struct DebugInspectorView: View {
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
+    }
+
+    private var modelIOMaterialRecordSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Model I/O Inspection")
+                .font(.subheadline.bold())
+
+            if input.package.modelIOMaterialRecords.isEmpty {
+                Text("No Model I/O materials were discovered.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(input.package.modelIOMaterialRecords) { record in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("mesh=\(record.meshName), submesh=\(record.submeshIndex), material=\(record.materialName)")
+                    Text("baseColor=\(record.baseColorSummary)")
+                    ForEach(record.allSemanticSummaries, id: \.self) { line in
+                        Text("• \(line)")
+                    }
+                }
+                .font(.caption)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private var cachedSampleDiagnosticsSection: some View {
+        let diagnostics = input.package.cachedDiagnostics
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Cached Sample Diagnostics")
+                .font(.subheadline.bold())
+            Text("count: \(diagnostics.sampleCount)")
+            Text("meanRGB: (\(diagnostics.meanRGB.x, specifier: "%.3f"), \(diagnostics.meanRGB.y, specifier: "%.3f"), \(diagnostics.meanRGB.z, specifier: "%.3f"))")
+            Text("meanHSV: (\(diagnostics.meanHSV.x, specifier: "%.1f")°, \(diagnostics.meanHSV.y, specifier: "%.3f"), \(diagnostics.meanHSV.z, specifier: "%.3f"))")
+            Text("S min/max: \(diagnostics.minSaturation, specifier: "%.3f") / \(diagnostics.maxSaturation, specifier: "%.3f")")
+            Text("V min/max: \(diagnostics.minValue, specifier: "%.3f") / \(diagnostics.maxValue, specifier: "%.3f")")
+            if diagnostics.hueBucketSummaries.isEmpty {
+                Text("Hue buckets: (none)")
+            } else {
+                Text("Hue buckets: \(diagnostics.hueBucketSummaries.joined(separator: ", "))")
+            }
+        }
+        .font(.footnote)
     }
 
 
@@ -130,6 +181,10 @@ struct DebugInspectorView: View {
                 .font(.caption)
             Slider(value: value, in: range)
         }
+    }
+
+    private func boolText(_ value: Bool) -> String {
+        value ? "Y" : "N"
     }
 
     private func refreshInspectorScene() {

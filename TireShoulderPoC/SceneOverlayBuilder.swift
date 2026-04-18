@@ -48,9 +48,9 @@ enum SceneOverlayBuilder {
         }
 
         let scene = SCNScene()
+        scene.background.contents = UIColor(white: 0.05, alpha: 1.0)
         let rawContainer = SCNNode()
         cloneChildren(from: rawScene.rootNode, to: rawContainer)
-        applyOpacityRecursively(node: rawContainer, opacity: 0.92)
         scene.rootNode.addChildNode(rawContainer)
 
         if showBlue {

@@ -60,6 +60,42 @@ struct MaterialInspectionRecord: Identifiable, Sendable {
     let triangleCount: Int
     let sampledTriangleCount: Int
     let textureSourceSummary: String
+    let lightingModelName: String
+    let diffuseType: String
+    let emissionType: String
+    let multiplyType: String
+    let selfIlluminationType: String
+    let transparentType: String
+    let metalnessType: String
+    let roughnessType: String
+    let diffuseTransformIsIdentity: Bool
+    let emissionTransformIsIdentity: Bool
+    let multiplyTransformIsIdentity: Bool
+    let selfIlluminationTransformIsIdentity: Bool
+    let transparentTransformIsIdentity: Bool
+    let metalnessTransformIsIdentity: Bool
+    let roughnessTransformIsIdentity: Bool
+    let transparency: Float
+}
+
+struct ModelIOMaterialInspectionRecord: Identifiable, Sendable {
+    let id = UUID()
+    let meshName: String
+    let submeshIndex: Int
+    let materialName: String
+    let baseColorSummary: String
+    let allSemanticSummaries: [String]
+}
+
+struct CachedSampleDiagnostics: Sendable {
+    let sampleCount: Int
+    let meanRGB: SIMD3<Float>
+    let meanHSV: SIMD3<Float>
+    let minSaturation: Float
+    let maxSaturation: Float
+    let minValue: Float
+    let maxValue: Float
+    let hueBucketSummaries: [String]
 }
 
 struct Transform4x4: Sendable {
@@ -95,7 +131,9 @@ struct LoadedModelPackage: Sendable {
     let rawRedCount: Int
     let skippedNoUVTriangles: Int
     let materialRecords: [MaterialInspectionRecord]
+    let modelIOMaterialRecords: [ModelIOMaterialInspectionRecord]
     let cachedSamples: [CachedCentroidSample]
+    let cachedDiagnostics: CachedSampleDiagnostics
     let warnings: [String]
 }
 
