@@ -60,6 +60,13 @@ struct MaterialInspectionRecord: Identifiable, Sendable {
     let triangleCount: Int
     let sampledTriangleCount: Int
     let textureSourceSummary: String
+    let diffuseType: String?
+    let emissionType: String?
+    let multiplyType: String?
+    let selfIlluminationType: String?
+    let transparentType: String?
+    let metalnessType: String?
+    let roughnessType: String?
 }
 
 struct Transform4x4: Sendable {

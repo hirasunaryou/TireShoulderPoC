@@ -274,7 +274,14 @@ enum USDZLoader {
                     hasVertexColor: hasVertexColor,
                     triangleCount: triangleCount,
                     sampledTriangleCount: sampledTriangleCount,
-                    textureSourceSummary: sampler.sourceSummary
+                    textureSourceSummary: sampler.sourceSummary,
+                    diffuseType: material?.diffuse.contents.map { String(describing: type(of: $0)) },
+                    emissionType: material?.emission.contents.map { String(describing: type(of: $0)) },
+                    multiplyType: material?.multiply.contents.map { String(describing: type(of: $0)) },
+                    selfIlluminationType: material?.selfIllumination.contents.map { String(describing: type(of: $0)) },
+                    transparentType: material?.transparent.contents.map { String(describing: type(of: $0)) },
+                    metalnessType: material?.metalness.contents.map { String(describing: type(of: $0)) },
+                    roughnessType: material?.roughness.contents.map { String(describing: type(of: $0)) }
                 )
                 materialRecords.append(record)
             }
