@@ -22,11 +22,13 @@ struct ContentView: View {
 
                     if let newInput = appModel.newInput {
                         DebugInspectorView(kind: .new, input: newInput)
+                        CachedSampleSummaryStatsView(input: newInput)
                         MaterialTypeInspectorSupplementView(input: newInput)
                     }
 
                     if let usedInput = appModel.usedInput {
                         DebugInspectorView(kind: .used, input: usedInput)
+                        CachedSampleSummaryStatsView(input: usedInput)
                         MaterialTypeInspectorSupplementView(input: usedInput)
                     }
 
@@ -353,5 +355,26 @@ private struct MaterialTypeInspectorSupplementView: View {
         if let value {
             Text("\(label)=\(value)")
         }
+    }
+}
+
+private struct CachedSampleSummaryStatsView: View {
+    let input: ModelInput
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Cached Sample Summary")
+                .font(.subheadline.bold())
+
+            Text("mean RGB: (\(compact(input.package.meanR)), \(compact(input.package.meanG)), \(compact(input.package.meanB)))")
+            Text("mean HSV: (\(compact(input.package.meanHue)), \(compact(input.package.meanSaturation)), \(compact(input.package.meanValue)))")
+            Text("min/max saturation: \(compact(input.package.minSaturationObserved)) / \(compact(input.package.maxSaturationObserved))")
+            Text("min/max value: \(compact(input.package.minValueObserved)) / \(compact(input.package.maxValueObserved))")
+        }
+        .font(.caption)
+    }
+
+    private func compact(_ value: Float) -> String {
+        String(format: "%.3f", value)
     }
 }
