@@ -323,7 +323,7 @@ enum USDZLoader {
                     transparentTransformIdentity: SCNMatrix4EqualToMatrix4(material?.transparent.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
                     metalnessTransformIdentity: SCNMatrix4EqualToMatrix4(material?.metalness.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
                     roughnessTransformIdentity: SCNMatrix4EqualToMatrix4(material?.roughness.contentsTransform ?? SCNMatrix4Identity, SCNMatrix4Identity),
-                    transparency: material?.transparency ?? 1
+                    transparency: Float(material?.transparency ?? 1)
                 )
                 materialRecords.append(record)
             }
@@ -413,45 +413,46 @@ enum USDZLoader {
     private static func inspectModelIOMaterials(url: URL) throws -> [ModelIOMaterialInspectionRecord] {
         let asset = MDLAsset(url: url)
         var records: [ModelIOMaterialInspectionRecord] = []
-        for index in 0..<asset.count {
-            guard let object = asset.object(at: index) else { continue }
-            collectModelIOMaterials(from: object, records: &records)
+
+        // NOTE:
+        // `childObjects(of:)` はアセット内を再帰的に走査して型一致オブジェクトを返すため、
+        // API差異が出やすい `children` コンテナ直接操作より移植性が高い。
+        if let meshes = asset.childObjects(of: MDLMesh.self) as? [MDLMesh] {
+            for mesh in meshes {
+                collectModelIOMaterials(from: mesh, records: &records)
+            }
         }
         return records
     }
 
-    private static func collectModelIOMaterials(from object: MDLObject,
+    private static func collectModelIOMaterials(from mesh: MDLMesh,
                                                 records: inout [ModelIOMaterialInspectionRecord]) {
-        if let mesh = object as? MDLMesh,
-           let submeshContainer = mesh.submeshes {
-            for submeshIndex in 0..<submeshContainer.count {
-                guard let submesh = submeshContainer.object(at: submeshIndex) as? MDLSubmesh,
-                      let material = submesh.material else { continue }
-                let baseColor = material.property(with: .baseColor)
-                records.append(
-                    ModelIOMaterialInspectionRecord(
-                        meshName: mesh.name.isEmpty ? "(no-mesh-name)" : mesh.name,
-                        submeshIndex: submeshIndex,
-                        materialName: material.name ?? "(no-material-name)",
-                        semanticSummary: materialPropertiesSummary(material: material),
-                        hasBaseColor: baseColor != nil,
-                        baseColorKind: describeModelIOBaseColor(baseColor)
-                    )
-                )
-            }
-        }
+        guard let submeshContainer = mesh.submeshes else { return }
 
-        if let children = object.children {
-            for childIndex in 0..<children.count {
-                guard let child = children.object(at: childIndex) as? MDLObject else { continue }
-                collectModelIOMaterials(from: child, records: &records)
-            }
+        for submeshIndex in 0..<submeshContainer.count {
+            guard let submesh = submeshContainer[submeshIndex] as? MDLSubmesh,
+                  let material = submesh.material else { continue }
+
+            let baseColor = material.property(with: .baseColor)
+            let materialName = material.name.isEmpty ? "(no-material-name)" : material.name
+
+            records.append(
+                ModelIOMaterialInspectionRecord(
+                    meshName: mesh.name.isEmpty ? "(no-mesh-name)" : mesh.name,
+                    submeshIndex: submeshIndex,
+                    materialName: materialName,
+                    semanticSummary: materialPropertiesSummary(material: material),
+                    hasBaseColor: baseColor != nil,
+                    baseColorKind: describeModelIOBaseColor(baseColor)
+                )
+            )
         }
     }
 
     private static func materialPropertiesSummary(material: MDLMaterial) -> String {
         var names: [String] = []
-        for case let property as MDLMaterialProperty in material {
+        for index in 0..<material.count {
+            let property = material.property(at: index)
             names.append(String(describing: property.semantic))
         }
         return names.isEmpty ? "(none)" : names.joined(separator: ", ")
@@ -694,6 +695,6 @@ enum USDZLoader {
 
 private extension Int {
     func clamped(to range: ClosedRange<Int>) -> Int {
-        min(max(self, range.lowerBound), range.upperBound)
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }
