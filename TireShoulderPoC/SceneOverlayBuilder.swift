@@ -36,6 +36,30 @@ enum SceneOverlayBuilder {
         return overlayScene
     }
 
+    static func makeInspectionScene(modelURL: URL,
+                                    bluePoints: [Point3],
+                                    redPoints: [Point3]) throws -> SCNScene {
+        let scene: SCNScene
+        do {
+            scene = try SCNScene(url: modelURL, options: nil)
+        } catch {
+            throw PoCError.sceneLoadFailed(error.localizedDescription)
+        }
+
+        let inspectionScene = SCNScene()
+        let modelContainer = SCNNode()
+        cloneChildren(from: scene.rootNode, to: modelContainer)
+        applyOpacityRecursively(node: modelContainer, opacity: 0.9)
+        inspectionScene.rootNode.addChildNode(modelContainer)
+
+        let blueNode = pointCloudNode(points: bluePoints, color: .blue)
+        let redNode = pointCloudNode(points: redPoints, color: .red)
+        inspectionScene.rootNode.addChildNode(blueNode)
+        inspectionScene.rootNode.addChildNode(redNode)
+        addAxisGuide(to: inspectionScene.rootNode)
+        return inspectionScene
+    }
+
     private static func cloneChildren(from root: SCNNode, to destination: SCNNode) {
         for child in root.childNodes {
             destination.addChildNode(child.clone())
@@ -78,5 +102,20 @@ enum SceneOverlayBuilder {
         geometry.radialSegmentCount = 12
         geometry.firstMaterial?.diffuse.contents = UIColor.white.withAlphaComponent(0.75)
         return SCNNode(geometry: geometry)
+    }
+
+    private static func pointCloudNode(points: [Point3], color: UIColor) -> SCNNode {
+        let container = SCNNode()
+        let radius: CGFloat = 0.0007
+        for point in points {
+            let sphere = SCNSphere(radius: radius)
+            sphere.segmentCount = 8
+            sphere.firstMaterial?.diffuse.contents = color
+            sphere.firstMaterial?.lightingModel = .constant
+            let pointNode = SCNNode(geometry: sphere)
+            pointNode.simdPosition = point.simd
+            container.addChildNode(pointNode)
+        }
+        return container
     }
 }

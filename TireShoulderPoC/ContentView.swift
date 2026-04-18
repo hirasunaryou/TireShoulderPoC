@@ -19,6 +19,7 @@ struct ContentView: View {
                     loadSection
                     actionSection
                     statusSection
+                    debugInspectorSection
 
                     if let overlayScene = appModel.overlayScene {
                         GroupBox("3D重ね合わせ") {
@@ -96,6 +97,7 @@ struct ContentView: View {
                     subtitle: appModel.newInput?.package.displayName ?? "未読込",
                     blueCount: appModel.newInput?.package.bluePoints.count,
                     redCount: appModel.newInput?.package.redPoints.count,
+                    warningCount: appModel.newInput?.package.warnings.count,
                     actionTitle: "新品USDZを選ぶ"
                 ) {
                     activeImportKind = .new
@@ -107,6 +109,7 @@ struct ContentView: View {
                     subtitle: appModel.usedInput?.package.displayName ?? "未読込",
                     blueCount: appModel.usedInput?.package.bluePoints.count,
                     redCount: appModel.usedInput?.package.redPoints.count,
+                    warningCount: appModel.usedInput?.package.warnings.count,
                     actionTitle: "走行品USDZを選ぶ"
                 ) {
                     activeImportKind = .used
@@ -128,7 +131,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(appModel.isBusy || appModel.newInput == nil || appModel.usedInput == nil)
+                .disabled(appModel.isBusy || !appModel.canRunComparison)
 
                 Button("リセット", role: .destructive) {
                     appModel.reset()
@@ -156,6 +159,32 @@ struct ContentView: View {
             GroupBox("状態") {
                 Text(appModel.statusMessage)
                     .font(.subheadline)
+            }
+        }
+    }
+
+    private var debugInspectorSection: some View {
+        Group {
+            if let newInput = appModel.newInput {
+                DebugInspectorView(
+                    title: "Debug Inspector - 新品",
+                    input: newInput,
+                    scene: appModel.debugSceneByKind[.new],
+                    config: $appModel.config
+                ) {
+                    appModel.reextractMasks(kind: .new)
+                }
+            }
+
+            if let usedInput = appModel.usedInput {
+                DebugInspectorView(
+                    title: "Debug Inspector - 走行品",
+                    input: usedInput,
+                    scene: appModel.debugSceneByKind[.used],
+                    config: $appModel.config
+                ) {
+                    appModel.reextractMasks(kind: .used)
+                }
             }
         }
     }
@@ -258,6 +287,7 @@ private struct LoadCard: View {
     let subtitle: String
     let blueCount: Int?
     let redCount: Int?
+    let warningCount: Int?
     let actionTitle: String
     let action: () -> Void
 
@@ -273,6 +303,7 @@ private struct LoadCard: View {
             HStack(spacing: 12) {
                 Label("青 \(blueCount.map { String($0) } ?? "-")", systemImage: "square.fill")
                 Label("赤 \(redCount.map { String($0) } ?? "-")", systemImage: "square.fill")
+                Label("警告 \(warningCount.map { String($0) } ?? "0")", systemImage: "exclamationmark.triangle")
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
