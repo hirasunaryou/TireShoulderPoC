@@ -332,6 +332,7 @@ enum USDZLoader {
             }
         }
 
+        let colorRichSamples = cachedSamples.filter { $0.hsv.saturation >= 0.05 }
         let classifiedPoints = classifyNearColorRichSamples(cachedSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
@@ -352,7 +353,7 @@ enum USDZLoader {
         }
 
         let cachedStats = summarizeCachedSamples(cachedSamples)
-        logCachedSampleHSVDiagnostics(cachedSamples, config: config)
+        logCachedSampleHSVDiagnostics(cachedSamples, colorRichSamples: colorRichSamples, config: config)
 
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
@@ -548,7 +549,11 @@ enum USDZLoader {
         )
     }
 
-    private static func logCachedSampleHSVDiagnostics(_ samples: [CachedCentroidSample], config: AnalysisConfig) {
+    private static func logCachedSampleHSVDiagnostics(
+        _ samples: [CachedCentroidSample],
+        colorRichSamples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) {
         var hueHistogram = [Int](repeating: 0, count: 12)
         var saturationAtLeast005 = 0
         var saturationAtLeast010 = 0
@@ -608,7 +613,6 @@ enum USDZLoader {
             )
         }
 
-        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
         let colorRichCount = colorRichSamples.count
         print("[HSV.debug.colorRich] colorRichCount=\(colorRichCount)")
 
@@ -645,7 +649,7 @@ enum USDZLoader {
             .joined(separator: " ")
         print("[HSV.debug.colorRich] hueHistogram(12bins) \(colorRichHistogramSummary)")
         print("[HSV.debug.colorRich] blueRule=\(colorRichBlueRuleCount) redRule=\(colorRichRedRuleCount)")
-        let nearColorRichDiagnostics = nearColorRichDiagnostics(samples, config: config)
+        let nearColorRichDiagnostics = nearColorRichDiagnostics(samples, colorRichSamples: colorRichSamples, config: config)
         print("[HSV.debug.nearColorRich] candidateNearColorRichCount=\(nearColorRichDiagnostics.candidateNearColorRichCount)")
         print("[HSV.debug.nearColorRich] blueRule=\(nearColorRichDiagnostics.blueRuleCount) redRule=\(nearColorRichDiagnostics.redRuleCount)")
 
@@ -670,7 +674,8 @@ enum USDZLoader {
         _ samples: [CachedCentroidSample],
         config: AnalysisConfig
     ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>]) {
-        let diagnostics = nearColorRichDiagnostics(samples, config: config)
+        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
+        let diagnostics = nearColorRichDiagnostics(samples, colorRichSamples: colorRichSamples, config: config)
         var bluePoints: [SIMD3<Float>] = []
         var redPoints: [SIMD3<Float>] = []
         bluePoints.reserveCapacity(diagnostics.blueRuleCount)
@@ -693,9 +698,9 @@ enum USDZLoader {
 
     private static func nearColorRichDiagnostics(
         _ samples: [CachedCentroidSample],
+        colorRichSamples: [CachedCentroidSample],
         config: AnalysisConfig
     ) -> (nearColorRichFlags: [Bool], candidateNearColorRichCount: Int, blueRuleCount: Int, redRuleCount: Int) {
-        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
         guard !colorRichSamples.isEmpty else {
             return ([Bool](repeating: false, count: samples.count), 0, 0, 0)
         }
