@@ -8,6 +8,7 @@ struct DebugInspectorView: View {
     let input: ModelInput
 
     @State private var inspectorScene: SCNScene?
+    @State private var roiPreviewScene: SCNScene?
     @State private var sceneError: String?
     @State private var showBluePoints = true
     @State private var showRedPoints = true
@@ -19,6 +20,11 @@ struct DebugInspectorView: View {
     @State private var roiNormMaxY: Float = 1
     @State private var roiNormMinZ: Float = 0
     @State private var roiNormMaxZ: Float = 1
+    @State private var hasPendingROIChanges = false
+    @State private var autoApplyROI = false
+    @State private var roiApplyTask: Task<Void, Never>?
+    @State private var isSyncingROI = false
+    @State private var roiDeltaSummary: ROIReinspectDelta?
 
     var body: some View {
         GroupBox("\(kind.rawValue) Debug Inspector") {
@@ -64,7 +70,7 @@ struct DebugInspectorView: View {
                 HStack {
                     Button("キャッシュから再抽出") {
                         appModel.reextractMasks(kind: kind)
-                        refreshInspectorScene()
+                        refreshInspectorScenes()
                     }
                     .buttonStyle(.borderedProminent)
 
@@ -76,12 +82,13 @@ struct DebugInspectorView: View {
         }
         .onAppear {
             syncROISlidersFromCurrentInput()
-            refreshInspectorScene()
+            refreshInspectorScenes()
         }
-        .onChange(of: showBluePoints) { _, _ in refreshInspectorScene() }
-        .onChange(of: showRedPoints) { _, _ in refreshInspectorScene() }
+        .onChange(of: showBluePoints) { _, _ in refreshInspectorScenes() }
+        .onChange(of: showRedPoints) { _, _ in refreshInspectorScenes() }
         .onChange(of: input.package.sourceBounds) { _, _ in syncROISlidersFromCurrentInput() }
         .onChange(of: input.roi) { _, _ in syncROISlidersFromCurrentInput() }
+        .onDisappear { roiApplyTask?.cancel() }
     }
 
     private var thresholdEditor: some View {
@@ -105,36 +112,51 @@ struct DebugInspectorView: View {
             Text("ROI (AABB) Editor")
                 .font(.subheadline.bold())
 
+            if let roiPreviewScene {
+                SceneKitOverlayView(scene: roiPreviewScene)
+                    .frame(height: 180)
+            }
+
+            if hasPendingROIChanges {
+                Label("未適用の変更あり", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
             boundsText(title: "sourceBounds", bounds: current.package.sourceBounds)
             if let roi = current.roi {
                 boundsText(title: "currentROI", bounds: roi)
             } else {
                 Text("currentROI: nil (全体対象)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                .foregroundStyle(.secondary)
             }
+            boundsText(title: "pendingROI", bounds: pendingROI)
+                .foregroundStyle(hasPendingROIChanges ? .orange : .secondary)
+
+            roiDeltaCompactView
 
             roiAxisEditor(axis: "X", min: roiMinXBinding, max: roiMaxXBinding, sourceMin: current.package.sourceBounds.min.x, sourceMax: current.package.sourceBounds.max.x)
             roiAxisEditor(axis: "Y", min: roiMinYBinding, max: roiMaxYBinding, sourceMin: current.package.sourceBounds.min.y, sourceMax: current.package.sourceBounds.max.y)
             roiAxisEditor(axis: "Z", min: roiMinZBinding, max: roiMaxZBinding, sourceMin: current.package.sourceBounds.min.z, sourceMax: current.package.sourceBounds.max.z)
 
+            Toggle("Auto Apply (デバウンス適用)", isOn: $autoApplyROI)
+                .font(.caption)
+
             HStack {
                 Button("ROIを適用") {
-                    let roi = makeROIFromCurrentSliders(sourceBounds: current.package.sourceBounds)
-                    appModel.setROI(kind: kind, roi: roi)
-                    Task {
-                        await appModel.reinspectModel(kind: kind, reason: "ROI適用")
-                        refreshInspectorScene()
-                    }
+                    applyROI(reason: "ROI適用")
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!hasPendingROIChanges && current.roi != nil)
 
                 Button("ROI解除", role: .destructive) {
+                    roiApplyTask?.cancel()
                     appModel.setROI(kind: kind, roi: nil)
                     syncROISlidersFromCurrentInput()
                     Task {
-                        await appModel.reinspectModel(kind: kind, reason: "ROI解除")
-                        refreshInspectorScene()
+                        roiDeltaSummary = await appModel.reinspectModel(kind: kind, reason: "ROI解除")
+                        refreshInspectorScenes()
                     }
                 }
                 .buttonStyle(.bordered)
@@ -214,27 +236,27 @@ struct DebugInspectorView: View {
     }
 
     private var roiMinXBinding: Binding<Float> {
-        Binding(get: { roiNormMinX }, set: { roiNormMinX = min($0, roiNormMaxX) })
+        Binding(get: { roiNormMinX }, set: { roiNormMinX = min($0, roiNormMaxX); handleROISliderEdited() })
     }
 
     private var roiMaxXBinding: Binding<Float> {
-        Binding(get: { roiNormMaxX }, set: { roiNormMaxX = max($0, roiNormMinX) })
+        Binding(get: { roiNormMaxX }, set: { roiNormMaxX = max($0, roiNormMinX); handleROISliderEdited() })
     }
 
     private var roiMinYBinding: Binding<Float> {
-        Binding(get: { roiNormMinY }, set: { roiNormMinY = min($0, roiNormMaxY) })
+        Binding(get: { roiNormMinY }, set: { roiNormMinY = min($0, roiNormMaxY); handleROISliderEdited() })
     }
 
     private var roiMaxYBinding: Binding<Float> {
-        Binding(get: { roiNormMaxY }, set: { roiNormMaxY = max($0, roiNormMinY) })
+        Binding(get: { roiNormMaxY }, set: { roiNormMaxY = max($0, roiNormMinY); handleROISliderEdited() })
     }
 
     private var roiMinZBinding: Binding<Float> {
-        Binding(get: { roiNormMinZ }, set: { roiNormMinZ = min($0, roiNormMaxZ) })
+        Binding(get: { roiNormMinZ }, set: { roiNormMinZ = min($0, roiNormMaxZ); handleROISliderEdited() })
     }
 
     private var roiMaxZBinding: Binding<Float> {
-        Binding(get: { roiNormMaxZ }, set: { roiNormMaxZ = max($0, roiNormMinZ) })
+        Binding(get: { roiNormMaxZ }, set: { roiNormMaxZ = max($0, roiNormMinZ); handleROISliderEdited() })
     }
 
     private func sliderRow(label: String, value: Binding<Float>, range: ClosedRange<Float>) -> some View {
@@ -245,7 +267,7 @@ struct DebugInspectorView: View {
         }
     }
 
-    private func refreshInspectorScene() {
+    private func refreshInspectorScenes() {
         do {
             let sourceInput = kind == .new ? appModel.newInput : appModel.usedInput
             guard let sourceInput else { return }
@@ -253,16 +275,28 @@ struct DebugInspectorView: View {
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
                 showBlue: showBluePoints,
-                showRed: showRedPoints
+                showRed: showRedPoints,
+                pendingROI: hasPendingROIChanges ? pendingROI : nil,
+                appliedROI: sourceInput.roi
+            )
+            roiPreviewScene = try SceneOverlayBuilder.makeInspectorScene(
+                modelURL: sourceInput.fileURL,
+                package: sourceInput.package,
+                showBlue: showBluePoints,
+                showRed: showRedPoints,
+                pendingROI: pendingROI,
+                appliedROI: sourceInput.roi
             )
             sceneError = nil
         } catch {
             sceneError = error.localizedDescription
             inspectorScene = nil
+            roiPreviewScene = nil
         }
     }
 
     private func syncROISlidersFromCurrentInput() {
+        isSyncingROI = true
         let bounds = currentInput.package.sourceBounds
         let roi = currentInput.roi ?? bounds
 
@@ -272,6 +306,9 @@ struct DebugInspectorView: View {
         roiNormMaxY = normalize(roi.max.y, sourceMin: bounds.min.y, sourceMax: bounds.max.y)
         roiNormMinZ = normalize(roi.min.z, sourceMin: bounds.min.z, sourceMax: bounds.max.z)
         roiNormMaxZ = normalize(roi.max.z, sourceMin: bounds.min.z, sourceMax: bounds.max.z)
+        hasPendingROIChanges = false
+        isSyncingROI = false
+        refreshInspectorScenes()
     }
 
     private func makeROIFromCurrentSliders(sourceBounds: SpatialBounds3D) -> SpatialBounds3D {
@@ -304,5 +341,66 @@ struct DebugInspectorView: View {
         }
         return appModel.usedInput ?? input
     }
-}
 
+    private var pendingROI: SpatialBounds3D {
+        makeROIFromCurrentSliders(sourceBounds: currentInput.package.sourceBounds)
+    }
+
+    private var roiDeltaCompactView: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("ROI適用差分")
+                .font(.caption.bold())
+            if let delta = roiDeltaSummary {
+                Text("samples: \(delta.beforeSamples) -> \(delta.afterSamples)")
+                    .font(.caption2)
+                Text("blue: \(delta.beforeBlue) -> \(delta.afterBlue), red: \(delta.beforeRed) -> \(delta.afterRed)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                let estimated = estimateCounts(for: pendingROI)
+                Text("pending samples: \(estimated.samples), blue: \(estimated.blue), red: \(estimated.red)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func handleROISliderEdited() {
+        guard !isSyncingROI else { return }
+        hasPendingROIChanges = pendingROI != (currentInput.roi ?? currentInput.package.sourceBounds)
+        refreshInspectorScenes()
+        guard autoApplyROI, hasPendingROIChanges else { return }
+
+        roiApplyTask?.cancel()
+        roiApplyTask = Task {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { applyROI(reason: "Auto Apply") }
+        }
+    }
+
+    private func applyROI(reason: String) {
+        roiApplyTask?.cancel()
+        let roi = pendingROI
+        appModel.setROI(kind: kind, roi: roi)
+        hasPendingROIChanges = false
+        Task {
+            roiDeltaSummary = await appModel.reinspectModel(kind: kind, reason: reason)
+            refreshInspectorScenes()
+        }
+    }
+
+    private func estimateCounts(for roi: SpatialBounds3D) -> (samples: Int, blue: Int, red: Int) {
+        let package = currentInput.package
+        let sampleCount = package.sampledPoints.lazy.filter { isInside($0, roi: roi) }.count
+        let blueCount = package.bluePoints.lazy.filter { isInside($0, roi: roi) }.count
+        let redCount = package.redPoints.lazy.filter { isInside($0, roi: roi) }.count
+        return (samples: sampleCount, blue: blueCount, red: redCount)
+    }
+
+    private func isInside(_ point: Point3, roi: SpatialBounds3D) -> Bool {
+        point.x >= roi.min.x && point.x <= roi.max.x &&
+        point.y >= roi.min.y && point.y <= roi.max.y &&
+        point.z >= roi.min.z && point.z <= roi.max.z
+    }
+}
