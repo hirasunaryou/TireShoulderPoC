@@ -3,10 +3,12 @@ import SceneKit
 
 struct SceneKitOverlayView: View {
     let scene: SCNScene
+    var pointOfView: SCNNode? = nil
 
     var body: some View {
         SceneView(
             scene: scene,
+            pointOfView: pointOfView,
             options: [.autoenablesDefaultLighting, .allowsCameraControl]
         )
         .background(.thinMaterial)
