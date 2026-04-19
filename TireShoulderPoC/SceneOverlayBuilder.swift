@@ -35,8 +35,8 @@ enum SceneOverlayBuilder {
         let sceneBounds = combinedBounds([bounds(for: newContainer), bounds(for: usedContainer)]) ??
             SpatialBounds3D(min: Point3(x: -0.05, y: -0.05, z: -0.05), max: Point3(x: 0.05, y: 0.05, z: 0.05))
         let cameraNode = makeFramingCamera(bounds: sceneBounds)
+        cameraNode.name = "DefaultCamera"
         overlayScene.rootNode.addChildNode(cameraNode)
-        overlayScene.pointOfView = cameraNode
 
         return overlayScene
     }
@@ -160,8 +160,8 @@ enum SceneOverlayBuilder {
         ) ?? pendingROI ?? appliedROI ?? package.sourceBounds
         let framingBounds = focusBounds
         let cameraNode = makeFramingCamera(bounds: framingBounds)
+        cameraNode.name = "InspectorCamera"
         scene.rootNode.addChildNode(cameraNode)
-        scene.pointOfView = cameraNode
         return scene
     }
 
@@ -329,10 +329,11 @@ enum SceneOverlayBuilder {
     }
 
     private static func bounds(for node: SCNNode) -> SpatialBounds3D? {
-        var minVector = SCNVector3Zero
-        var maxVector = SCNVector3Zero
-        let hasBounds = node.getBoundingBoxMin(&minVector, max: &maxVector)
-        guard hasBounds else { return nil }
+        let (minVector, maxVector) = node.boundingBox
+        guard minVector.x.isFinite, minVector.y.isFinite, minVector.z.isFinite,
+              maxVector.x.isFinite, maxVector.y.isFinite, maxVector.z.isFinite else {
+            return nil
+        }
 
         let minWorld = node.convertPosition(minVector, to: nil)
         let maxWorld = node.convertPosition(maxVector, to: nil)

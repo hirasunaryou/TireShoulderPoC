@@ -183,7 +183,7 @@ struct DebugInspectorView: View {
                 .font(.subheadline.bold())
 
             if let roiPreviewScene {
-                SceneKitOverlayView(scene: roiPreviewScene, pointOfView: roiPreviewScene.pointOfView)
+                SceneKitOverlayView(scene: roiPreviewScene)
                     .frame(height: 190)
                 roiLegend
             }
