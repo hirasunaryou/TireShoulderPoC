@@ -51,9 +51,12 @@ enum SceneOverlayBuilder {
                                    showROIBounds: Bool,
                                    focusMode: InspectorFocusMode,
                                    selectedBrushPoints: [Point3] = [],
+                                   highlightedBrushPoint: Point3? = nil,
                                    brushAutoROI: SpatialBounds3D? = nil,
                                    pendingROI: SpatialBounds3D? = nil,
-                                   appliedROI: SpatialBounds3D? = nil) throws -> SCNScene {
+                                   appliedROI: SpatialBounds3D? = nil,
+                                   forcedFocusBounds: SpatialBounds3D? = nil,
+                                   framingDistanceScale: Float = 1.0) throws -> SCNScene {
         let rawScene: SCNScene
         do {
             rawScene = try SCNScene(url: modelURL, options: nil)
@@ -151,7 +154,16 @@ enum SceneOverlayBuilder {
                 pointCloudNode(
                     points: selectedBrushPoints.map(\.simd),
                     color: .cyan,
-                    pointRadius: 0.00075
+                    pointRadius: 0.001
+                )
+            )
+        }
+        if let highlightedBrushPoint {
+            scene.rootNode.addChildNode(
+                pointCloudNode(
+                    points: [highlightedBrushPoint.simd],
+                    color: .systemOrange,
+                    pointRadius: 0.0018
                 )
             )
         }
@@ -176,14 +188,14 @@ enum SceneOverlayBuilder {
             pendingROI: pendingROI,
             appliedROI: appliedROI
         ) ?? pendingROI ?? appliedROI ?? package.sourceBounds
-        let framingBounds = focusBounds
-        let cameraNode = makeFramingCamera(bounds: framingBounds)
+        let framingBounds = forcedFocusBounds ?? focusBounds
+        let cameraNode = makeFramingCamera(bounds: framingBounds, distanceScale: framingDistanceScale)
         cameraNode.name = "InspectorCamera"
         scene.rootNode.addChildNode(cameraNode)
         return scene
     }
 
-    static func makeFramingCamera(bounds: SpatialBounds3D) -> SCNNode {
+    static func makeFramingCamera(bounds: SpatialBounds3D, distanceScale: Float = 1.0) -> SCNNode {
         let camera = SCNCamera()
         camera.zNear = 0.0001
         camera.zFar = 200
@@ -200,7 +212,7 @@ enum SceneOverlayBuilder {
             bounds.max.z - bounds.min.z
         )
         let radius = max(max(size.x, size.y), max(size.z, 0.0005))
-        let distance = radius * 2.4
+        let distance = max(radius * 2.4 * max(distanceScale, 0.35), 0.0018)
         let position = SIMD3<Float>(
             center.x + distance * 0.85,
             center.y + distance * 0.65,

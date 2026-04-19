@@ -25,6 +25,10 @@ struct DebugInspectorView: View {
     @State private var brushRadiusMeters: Float = CropBrushState.default.radiusMeters
     @State private var brushAutoROIMarginMeters: Float = CropBrushState.default.autoROIMarginMeters
     @State private var cropBrushPreview: CropBrushPreview?
+    @State private var inspectorCameraTransform: simd_float4x4?
+    @State private var manualFocusTarget: ManualFocusTarget?
+    @State private var recentBrushStamp: Point3?
+    @State private var clearRecentStampTask: Task<Void, Never>?
 
     // ROI編集用の正規化値(0...1)。
     @State private var roiNormMinX: Float = 0
@@ -79,6 +83,7 @@ struct DebugInspectorView: View {
             }
             .onDisappear {
                 autoApplyTask?.cancel()
+                clearRecentStampTask?.cancel()
                 autoApplyTask = nil
             }
     }
@@ -103,7 +108,16 @@ struct DebugInspectorView: View {
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
-            .onChange(of: isBrushEditing) { _, _ in refreshInspectorScene() }
+            .onChange(of: isBrushEditing) { _, isEnabled in
+                if isEnabled {
+                    manualFocusTarget = .brush
+                    // Brush開始時は「塗れる大きさ」を優先して再フレーム。
+                    inspectorCameraTransform = nil
+                } else {
+                    manualFocusTarget = nil
+                }
+                refreshInspectorScene()
+            }
             .onChange(of: brushMode) { _, _ in refreshInspectorScene() }
             .onChange(of: brushRadiusMeters) { _, newValue in
                 updateCropBrushRadius(newValue)
@@ -133,15 +147,28 @@ struct DebugInspectorView: View {
     private var inspectorViewport: some View {
         Group {
             if let inspectorScene {
-                SceneKitOverlayView(
-                    scene: inspectorScene,
-                    isBrushEditing: isBrushEditing,
-                    minStampDistance: max(brushRadiusMeters * 0.55, 0.0008),
-                    onSurfaceHit: isBrushEditing ? { point in
-                        addBrushStamp(at: point)
-                    } : nil
-                )
-                    .frame(height: 280)
+                ZStack(alignment: .topLeading) {
+                    SceneKitOverlayView(
+                        scene: inspectorScene,
+                        isBrushEditing: isBrushEditing,
+                        minStampDistance: max(brushRadiusMeters * 0.55, 0.0008),
+                        cameraTransform: inspectorCameraTransform,
+                        onCameraTransformChange: { transform in
+                            inspectorCameraTransform = transform
+                        },
+                        onDoubleTap: isBrushEditing ? {
+                            resetInspectorView()
+                        } : nil,
+                        onSurfaceHit: isBrushEditing ? { point in
+                            addBrushStamp(at: point)
+                        } : nil
+                    )
+                    if isBrushEditing {
+                        brushGestureHint
+                    }
+                    focusButtons
+                }
+                .frame(height: 390)
             } else if let sceneError {
                 Text(sceneError)
                     .foregroundStyle(.red)
@@ -149,6 +176,32 @@ struct DebugInspectorView: View {
                 ProgressView()
             }
         }
+    }
+
+    private var brushGestureHint: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("1本指: 塗る")
+            Text("2本指: 視点移動")
+            Text("Pinch: 拡大縮小")
+            Text("Double Tap: Reset")
+        }
+        .font(.caption2)
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(8)
+    }
+
+    private var focusButtons: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            Button("Fit Model") { triggerManualFocus(.model) }
+            Button("Fit ROI") { triggerManualFocus(.roi) }
+            Button("Fit Brush") { triggerManualFocus(.brush) }
+            Button("Reset View") { resetInspectorView() }
+        }
+        .font(.caption2.weight(.semibold))
+        .buttonStyle(.borderedProminent)
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     private var renderAndFocusControls: some View {
@@ -491,6 +544,8 @@ struct DebugInspectorView: View {
         do {
             let sourceInput = kind == .new ? appModel.newInput : appModel.usedInput
             guard let sourceInput else { return }
+            let forcedFocus = manualFocusBounds(sourceInput: sourceInput)
+            let framingScale: Float = isBrushEditing ? 0.72 : 1.0
             inspectorScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
@@ -502,10 +557,18 @@ struct DebugInspectorView: View {
                 showROIBounds: showROIBounds,
                 focusMode: focusMode,
                 selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+                highlightedBrushPoint: recentBrushStamp,
                 brushAutoROI: cropBrushPreview?.autoROI,
                 pendingROI: pendingROI,
-                appliedROI: sourceInput.roi
+                appliedROI: sourceInput.roi,
+                forcedFocusBounds: forcedFocus,
+                framingDistanceScale: framingScale
             )
+            if forcedFocus != nil {
+                // 明示的なFit操作時だけ既存カメラ保持を解除する。
+                inspectorCameraTransform = nil
+                manualFocusTarget = nil
+            }
             sceneError = nil
         } catch {
             sceneError = error.localizedDescription
@@ -528,6 +591,7 @@ struct DebugInspectorView: View {
                 showROIBounds: true,
                 focusMode: .roi,
                 selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+                highlightedBrushPoint: recentBrushStamp,
                 brushAutoROI: cropBrushPreview?.autoROI,
                 pendingROI: pendingROI,
                 appliedROI: sourceInput.roi
@@ -611,9 +675,47 @@ struct DebugInspectorView: View {
             BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: brushMode)
         )
         appModel.setCropBrush(kind: kind, brush: brush)
+        recentBrushStamp = point
+        clearRecentStampTask?.cancel()
+        clearRecentStampTask = Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                recentBrushStamp = nil
+                refreshInspectorScene()
+            }
+        }
         refreshCropBrushPreview()
         refreshInspectorScene()
         refreshROIPreviewScene()
+    }
+
+    private func triggerManualFocus(_ target: ManualFocusTarget) {
+        manualFocusTarget = target
+        refreshInspectorScene()
+    }
+
+    private func resetInspectorView() {
+        manualFocusTarget = .model
+        inspectorCameraTransform = nil
+        refreshInspectorScene()
+    }
+
+    private func manualFocusBounds(sourceInput: ModelInput) -> SpatialBounds3D? {
+        let fallbackROI = pendingROI
+        switch manualFocusTarget {
+        case .model:
+            return sourceInput.package.sourceBounds
+        case .roi:
+            return sourceInput.roi ?? fallbackROI ?? sourceInput.package.sourceBounds
+        case .brush:
+            if let brushBounds = SpatialBounds3D(points: (cropBrushPreview?.selectedPoints ?? []).map(\.simd)) {
+                return brushBounds
+            }
+            return cropBrushPreview?.autoROI ?? fallbackROI ?? sourceInput.roi ?? sourceInput.package.sourceBounds
+        case nil:
+            return nil
+        }
     }
 
     private func updateCropBrushRadius(_ radius: Float) {
@@ -687,5 +789,13 @@ struct DebugInspectorView: View {
             showBluePoints = true
             showRedPoints = true
         }
+    }
+}
+
+private extension DebugInspectorView {
+    enum ManualFocusTarget {
+        case model
+        case roi
+        case brush
     }
 }
