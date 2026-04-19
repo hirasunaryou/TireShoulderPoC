@@ -63,7 +63,15 @@ final class AppModel: ObservableObject {
                 try USDZLoader.inspect(url: localURL, config: config, roi: nil)
             }.value
 
-            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, cropBrush: nil, package: package)
+            let input = ModelInput(
+                kind: kind,
+                fileURL: localURL,
+                roi: nil,
+                cropBrush: nil,
+                alignmentBrush: nil,
+                comparisonBrush: nil,
+                package: package
+            )
 
             switch kind {
             case .new:
@@ -106,9 +114,49 @@ final class AppModel: ObservableObject {
         setCropBrush(kind: kind, brush: nil)
     }
 
+    func setAlignmentBrush(kind: ModelKind, brush: ManualRegionBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.alignmentBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func setComparisonBrush(kind: ModelKind, brush: ManualRegionBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.comparisonBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func clearAlignmentBrush(kind: ModelKind) {
+        setAlignmentBrush(kind: kind, brush: nil)
+    }
+
+    func clearComparisonBrush(kind: ModelKind) {
+        setComparisonBrush(kind: kind, brush: nil)
+    }
+
     func previewCropBrushSelection(kind: ModelKind) -> CropBrushPreview? {
         guard let input = modelInput(for: kind), let brush = input.cropBrush else { return nil }
         return CropBrushEngine.makePreview(samples: input.package.cachedSamples, brush: brush)
+    }
+
+    func previewAlignmentBrush(kind: ModelKind) -> ManualRegionPreview? {
+        guard let input = modelInput(for: kind), let brush = input.alignmentBrush else { return nil }
+        return CropBrushEngine.makeManualRegionPreview(
+            samples: input.package.cachedSamples,
+            bluePoints: input.package.bluePoints,
+            redPoints: input.package.redPoints,
+            brush: brush
+        )
+    }
+
+    func previewComparisonBrush(kind: ModelKind) -> ManualRegionPreview? {
+        guard let input = modelInput(for: kind), let brush = input.comparisonBrush else { return nil }
+        return CropBrushEngine.makeManualRegionPreview(
+            samples: input.package.cachedSamples,
+            bluePoints: input.package.bluePoints,
+            redPoints: input.package.redPoints,
+            brush: brush
+        )
     }
 
     func applyCropBrushAsROI(kind: ModelKind, reason: String = "Crop Brushを適用") async -> ROIReinspectDelta? {
@@ -182,10 +230,14 @@ final class AppModel: ObservableObject {
 
         do {
             let config = self.config
-            let newPackage = newInput.package
-            let usedPackage = usedInput.package
+            let (newPackage, usedPackage, manualSummary) = try makeEffectivePackagesForComparison(
+                newInput: newInput,
+                usedInput: usedInput,
+                minimumMaskPoints: config.minimumMaskPoints
+            )
             let newURL = newInput.fileURL
             let usedURL = usedInput.fileURL
+            statusMessage = "青領域で位置合わせ中... \(manualSummary)"
 
             let result = try await Task.detached(priority: .userInitiated) {
                 try AnalysisCore.compare(newModel: newPackage,
@@ -204,6 +256,69 @@ final class AppModel: ObservableObject {
         }
 
         isBusy = false
+    }
+
+    private func makeEffectivePackagesForComparison(newInput: ModelInput,
+                                                    usedInput: ModelInput,
+                                                    minimumMaskPoints: Int) throws -> (LoadedModelPackage, LoadedModelPackage, String) {
+        // MVP方針: 既存パイプラインを崩さず、比較直前に blue/red 点群へ空間ゲートを重ねる。
+        // AnalysisCore.compare(...) には「既に整形済みの package」を渡すだけに留める。
+        let hasNewAlignment = hasActiveManualRegion(newInput.alignmentBrush)
+        let hasUsedAlignment = hasActiveManualRegion(usedInput.alignmentBrush)
+        let hasNewComparison = hasActiveManualRegion(newInput.comparisonBrush)
+        let hasUsedComparison = hasActiveManualRegion(usedInput.comparisonBrush)
+
+        guard hasNewAlignment == hasUsedAlignment else {
+            throw PoCError.profileFailed("Alignment Region は新品/走行品の両方に設定してください（片側のみは不可）。")
+        }
+        guard hasNewComparison == hasUsedComparison else {
+            throw PoCError.profileFailed("Comparison Region は新品/走行品の両方に設定してください（片側のみは不可）。")
+        }
+
+        var effectiveNew = newInput.package
+        var effectiveUsed = usedInput.package
+        var summaryParts: [String] = []
+
+        if hasNewAlignment,
+           let newBrush = newInput.alignmentBrush,
+           let usedBrush = usedInput.alignmentBrush {
+            let newSelected = CropBrushEngine.selectedSamples(from: newInput.package.cachedSamples, brush: newBrush)
+            let usedSelected = CropBrushEngine.selectedSamples(from: usedInput.package.cachedSamples, brush: usedBrush)
+            let gatedNewBlue = CropBrushEngine.gateMaskPoints(newInput.package.bluePoints, selectedSamples: newSelected)
+            let gatedUsedBlue = CropBrushEngine.gateMaskPoints(usedInput.package.bluePoints, selectedSamples: usedSelected)
+            guard gatedNewBlue.count >= minimumMaskPoints, gatedUsedBlue.count >= minimumMaskPoints else {
+                throw PoCError.alignmentFailed("Alignment Region適用後の青点が不足しています。新品 \(gatedNewBlue.count) / 走行品 \(gatedUsedBlue.count)（必要: \(minimumMaskPoints)）")
+            }
+            effectiveNew = effectiveNew.replacing(bluePoints: gatedNewBlue)
+            effectiveUsed = effectiveUsed.replacing(bluePoints: gatedUsedBlue)
+            summaryParts.append("Align sel \(newSelected.count)/\(usedSelected.count), blue \(gatedNewBlue.count)/\(gatedUsedBlue.count)")
+        } else {
+            summaryParts.append("Align auto blue \(newInput.package.bluePoints.count)/\(usedInput.package.bluePoints.count)")
+        }
+
+        if hasNewComparison,
+           let newBrush = newInput.comparisonBrush,
+           let usedBrush = usedInput.comparisonBrush {
+            let newSelected = CropBrushEngine.selectedSamples(from: newInput.package.cachedSamples, brush: newBrush)
+            let usedSelected = CropBrushEngine.selectedSamples(from: usedInput.package.cachedSamples, brush: usedBrush)
+            let gatedNewRed = CropBrushEngine.gateMaskPoints(newInput.package.redPoints, selectedSamples: newSelected)
+            let gatedUsedRed = CropBrushEngine.gateMaskPoints(usedInput.package.redPoints, selectedSamples: usedSelected)
+            guard gatedNewRed.count >= minimumMaskPoints, gatedUsedRed.count >= minimumMaskPoints else {
+                throw PoCError.profileFailed("Comparison Region適用後の赤点が不足しています。新品 \(gatedNewRed.count) / 走行品 \(gatedUsedRed.count)（必要: \(minimumMaskPoints)）")
+            }
+            effectiveNew = effectiveNew.replacing(redPoints: gatedNewRed)
+            effectiveUsed = effectiveUsed.replacing(redPoints: gatedUsedRed)
+            summaryParts.append("Comp sel \(newSelected.count)/\(usedSelected.count), red \(gatedNewRed.count)/\(gatedUsedRed.count)")
+        } else {
+            summaryParts.append("Comp auto red \(newInput.package.redPoints.count)/\(usedInput.package.redPoints.count)")
+        }
+
+        return (effectiveNew, effectiveUsed, summaryParts.joined(separator: " | "))
+    }
+
+    private func hasActiveManualRegion(_ brush: ManualRegionBrushState?) -> Bool {
+        guard let brush else { return false }
+        return brush.isEnabled && !brush.stamps.isEmpty
     }
 
     func exportCSV() {
