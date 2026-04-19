@@ -6,6 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var appModel: AppModel
     @State private var activeImportKind: ModelKind?
     @State private var isImporterPresented = false
+    @AppStorage("debug.nearColorRichRadiusMeters") private var nearColorRichRadiusMeters: Double = 0.01
 
     private var usdzType: UTType {
         UTType(filenameExtension: "usdz") ?? .data
@@ -19,6 +20,7 @@ struct ContentView: View {
                     loadSection
                     actionSection
                     statusSection
+                    debugExtractionSection
 
                     if let newInput = appModel.newInput {
                         DebugInspectorView(kind: .new, input: newInput)
@@ -176,6 +178,17 @@ struct ContentView: View {
             GroupBox("状態") {
                 Text(appModel.statusMessage)
                     .font(.subheadline)
+            }
+        }
+    }
+
+
+    private var debugExtractionSection: some View {
+        GroupBox("Debug Extraction") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Near Color-Rich Radius (meters): \(nearColorRichRadiusMeters, specifier: "%.3f")")
+                    .font(.footnote)
+                Slider(value: $nearColorRichRadiusMeters, in: 0.002 ... 0.03)
             }
         }
     }

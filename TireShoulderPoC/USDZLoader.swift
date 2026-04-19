@@ -183,6 +183,9 @@ private struct TextureSampler {
 
 enum USDZLoader {
     private static let maxCachedSamples = 12_000
+    private static let colorRichSaturationThreshold: Float = 0.05
+    private static let defaultNearColorRichRadiusMeters: Float = 0.01
+    private static let nearColorRichRadiusDefaultsKey = "debug.nearColorRichRadiusMeters"
 
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
@@ -341,6 +344,13 @@ enum USDZLoader {
             }
         }
 
+        let filteredClassification = classifyCachedSamplesNearColorRich(cachedSamples, config: config)
+        bluePoints = filteredClassification.bluePoints
+        redPoints = filteredClassification.redPoints
+
+        print("[HSV.debug] candidateNearColorRichCount=\(filteredClassification.candidateNearColorRichCount)")
+        print("[HSV.debug] blueRuleNearColorRich=\(filteredClassification.blueRuleCount) redRuleNearColorRich=\(filteredClassification.redRuleCount)")
+
         let rawBlueCount = bluePoints.count
         let rawRedCount = redPoints.count
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
@@ -387,19 +397,12 @@ enum USDZLoader {
     }
 
     static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
-        var bluePoints: [SIMD3<Float>] = []
-        var redPoints: [SIMD3<Float>] = []
+        let filteredClassification = classifyCachedSamplesNearColorRich(package.cachedSamples, config: config)
+        var bluePoints = filteredClassification.bluePoints
+        var redPoints = filteredClassification.redPoints
 
-        for sample in package.cachedSamples {
-            switch classify(hsv: sample.hsv, config: config) {
-            case .blue:
-                bluePoints.append(sample.worldPosition.simd)
-            case .red:
-                redPoints.append(sample.worldPosition.simd)
-            case .other:
-                break
-            }
-        }
+        print("[HSV.debug] candidateNearColorRichCount=\(filteredClassification.candidateNearColorRichCount)")
+        print("[HSV.debug] blueRuleNearColorRich=\(filteredClassification.blueRuleCount) redRuleNearColorRich=\(filteredClassification.redRuleCount)")
 
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
@@ -436,6 +439,58 @@ enum USDZLoader {
             maxValueObserved: package.maxValueObserved,
             warnings: warnings
         )
+    }
+
+    private static func classifyCachedSamplesNearColorRich(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], candidateNearColorRichCount: Int, blueRuleCount: Int, redRuleCount: Int) {
+        let colorRichPositions = samples
+            .filter { $0.hsv.saturation >= colorRichSaturationThreshold }
+            .map { $0.worldPosition.simd }
+
+        guard !colorRichPositions.isEmpty else {
+            return ([], [], 0, 0, 0)
+        }
+
+        let radius = nearColorRichRadiusMeters()
+        let radiusSquared = radius * radius
+
+        var bluePoints: [SIMD3<Float>] = []
+        var redPoints: [SIMD3<Float>] = []
+        var candidateNearColorRichCount = 0
+        var blueRuleCount = 0
+        var redRuleCount = 0
+
+        for sample in samples {
+            let position = sample.worldPosition.simd
+            let isNearColorRich = colorRichPositions.contains { reference in
+                simd_distance_squared(position, reference) <= radiusSquared
+            }
+
+            guard isNearColorRich else { continue }
+            candidateNearColorRichCount += 1
+
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                bluePoints.append(position)
+                blueRuleCount += 1
+            case .red:
+                redPoints.append(position)
+                redRuleCount += 1
+            case .other:
+                break
+            }
+        }
+
+        return (bluePoints, redPoints, candidateNearColorRichCount, blueRuleCount, redRuleCount)
+    }
+
+    private static func nearColorRichRadiusMeters() -> Float {
+        let defaults = UserDefaults.standard
+        let storedValue = defaults.object(forKey: nearColorRichRadiusDefaultsKey) as? NSNumber
+        let radius = storedValue?.floatValue ?? defaultNearColorRichRadiusMeters
+        return min(max(radius, 0.002), 0.03)
     }
 
     private static func inspectModelIOMaterials(url: URL) -> [ModelIOMaterialInspectionRecord] {
@@ -624,12 +679,12 @@ enum USDZLoader {
             )
         }
 
-        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
+        let colorRichSamples = samples.filter { $0.hsv.saturation >= colorRichSaturationThreshold }
         let colorRichCount = colorRichSamples.count
         print("[HSV.debug.colorRich] colorRichCount=\(colorRichCount)")
 
         guard colorRichCount > 0 else {
-            print("[HSV.debug.colorRich] No color-rich samples (saturation >= 0.05)")
+            print("[HSV.debug.colorRich] No color-rich samples (saturation >= \(colorRichSaturationThreshold))")
             return
         }
 
