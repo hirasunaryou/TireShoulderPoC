@@ -113,23 +113,16 @@ private struct TextureSampler {
     func sampleImage(at uv: SIMD2<Float>) -> SIMD3<Float>? {
         guard case .image(let width, let height, let pixels) = mode else { return nil }
 
-        // Object Capture系のテクスチャは基本的にアトラス前提なので、
-        // ラップより clamp のほうが seam 由来の誤検知を起こしにくい。
-        let clampedU = max(0, min(1, uv.x))
-        var clampedV = max(0, min(1, uv.y))
-        clampedV = 1 - clampedV
+        // USD/SceneKit/Model I/O の経路で UV の V 軸向きが逆になるケースがある。
+        // 片方だけを仮定すると「本来の色付き領域を黒背景として読む」事故が起こるため、
+        // uv.y と (1 - uv.y) の両方をサンプルして、色らしさが高い方を採用する。
+        // これにより、今回の「赤/青が0件になる」パターンを吸収する。
+        let candidates = [uv.y, 1 - uv.y]
+            .compactMap { sampleImageRaw(u: uv.x, v: $0, width: width, height: height, pixels: pixels) }
 
-        let x = min(width - 1, max(0, Int(round(clampedU * Float(width - 1)))))
-        let y = min(height - 1, max(0, Int(round(clampedV * Float(height - 1)))))
-        let index = (y * width + x) * 4
-
-        guard index + 3 < pixels.count else { return nil }
-
-        return SIMD3<Float>(
-            Float(pixels[index]) / 255,
-            Float(pixels[index + 1]) / 255,
-            Float(pixels[index + 2]) / 255
-        )
+        return candidates.max { lhs, rhs in
+            TextureSampler.sampleColorfulnessScore(lhs) < TextureSampler.sampleColorfulnessScore(rhs)
+        }
     }
 
     var flatColor: SIMD3<Float>? {
@@ -233,6 +226,57 @@ private struct TextureSampler {
         }
 
         return success ? (width, height, pixels) : nil
+    }
+
+    private func sampleImageRaw(
+        u: Float,
+        v: Float,
+        width: Int,
+        height: Int,
+        pixels: [UInt8]
+    ) -> SIMD3<Float>? {
+        // Object Capture 系テクスチャはアトラス前提のため、repeat より clamp が安定。
+        let clampedU = max(0, min(1, u))
+        let clampedV = max(0, min(1, v))
+
+        // 線のような細い描画を取りこぼしにくくするため最近傍ではなく bilinear 補間で読む。
+        let fx = clampedU * Float(width - 1)
+        let fy = clampedV * Float(height - 1)
+        let x0 = max(0, min(width - 1, Int(floor(fx))))
+        let y0 = max(0, min(height - 1, Int(floor(fy))))
+        let x1 = max(0, min(width - 1, x0 + 1))
+        let y1 = max(0, min(height - 1, y0 + 1))
+        let tx = fx - Float(x0)
+        let ty = fy - Float(y0)
+
+        guard let c00 = pixelRGB(x: x0, y: y0, width: width, pixels: pixels),
+              let c10 = pixelRGB(x: x1, y: y0, width: width, pixels: pixels),
+              let c01 = pixelRGB(x: x0, y: y1, width: width, pixels: pixels),
+              let c11 = pixelRGB(x: x1, y: y1, width: width, pixels: pixels) else {
+            return nil
+        }
+
+        let top = (c00 * (1 - tx)) + (c10 * tx)
+        let bottom = (c01 * (1 - tx)) + (c11 * tx)
+        return (top * (1 - ty)) + (bottom * ty)
+    }
+
+    private func pixelRGB(x: Int, y: Int, width: Int, pixels: [UInt8]) -> SIMD3<Float>? {
+        let index = (y * width + x) * 4
+        guard index + 3 < pixels.count else { return nil }
+        return SIMD3<Float>(
+            Float(pixels[index]) / 255,
+            Float(pixels[index + 1]) / 255,
+            Float(pixels[index + 2]) / 255
+        )
+    }
+
+    private static func sampleColorfulnessScore(_ rgb: SIMD3<Float>) -> Float {
+        let maxComponent = max(rgb.x, max(rgb.y, rgb.z))
+        let minComponent = min(rgb.x, min(rgb.y, rgb.z))
+        let chroma = maxComponent - minComponent
+        let saturation = maxComponent > 0 ? chroma / maxComponent : 0
+        return (saturation * 1.8) + (chroma * 1.2) + (maxComponent * 0.15)
     }
 }
 
