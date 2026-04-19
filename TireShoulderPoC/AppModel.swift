@@ -38,10 +38,10 @@ final class AppModel: ObservableObject {
             let config = self.config
 
             let package = try await Task.detached(priority: .userInitiated) {
-                try USDZLoader.inspect(url: localURL, config: config)
+                try USDZLoader.inspect(url: localURL, config: config, roi: nil)
             }.value
 
-            let input = ModelInput(kind: kind, fileURL: localURL, package: package)
+            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, package: package)
 
             switch kind {
             case .new:
@@ -72,6 +72,37 @@ final class AppModel: ObservableObject {
             usedInput = input
             statusMessage = "走行品: キャッシュ済みサンプルから再抽出しました。青 \(input.package.bluePoints.count) / 赤 \(input.package.redPoints.count)"
         }
+    }
+
+    /// ROI変更時はこちらを使ってUSDZ全体を再inspectする。
+    /// `reextractMasks` は cachedSamples のしきい値再分類専用であり、
+    /// ROIで三角形を除外し直す責務は持たせない。
+    func reinspectModel(kind: ModelKind) async {
+        guard var input = modelInput(for: kind) else { return }
+
+        isBusy = true
+        errorMessage = nil
+        exportedCSVURL = nil
+        analysisResult = nil
+        overlayScene = nil
+        statusMessage = "\(kind.rawValue) ROIを反映して再解析中..."
+
+        do {
+            let config = self.config
+            let fileURL = input.fileURL
+            let roi = input.roi
+            let package = try await Task.detached(priority: .userInitiated) {
+                try USDZLoader.inspect(url: fileURL, config: config, roi: roi)
+            }.value
+            input.package = package
+            setModelInput(input, for: kind)
+            statusMessage = makeImportSummary(kind: kind, package: package)
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "\(kind.rawValue) の再解析に失敗しました。"
+        }
+
+        isBusy = false
     }
 
     func runComparison() async {
@@ -150,5 +181,23 @@ final class AppModel: ObservableObject {
             line += "（警告 \(package.warnings.count) 件）"
         }
         return line
+    }
+
+    private func modelInput(for kind: ModelKind) -> ModelInput? {
+        switch kind {
+        case .new:
+            return newInput
+        case .used:
+            return usedInput
+        }
+    }
+
+    private func setModelInput(_ input: ModelInput, for kind: ModelKind) {
+        switch kind {
+        case .new:
+            newInput = input
+        case .used:
+            usedInput = input
+        }
     }
 }

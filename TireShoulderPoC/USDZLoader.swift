@@ -11,6 +11,59 @@ private enum MaskColor {
     case other
 }
 
+private struct BoundsAccumulator3D {
+    private var minPoint: SIMD3<Float>?
+    private var maxPoint: SIMD3<Float>?
+
+    mutating func append(points: [SIMD3<Float>]) {
+        for point in points {
+            append(point: point)
+        }
+    }
+
+    mutating func append(point: SIMD3<Float>) {
+        if let minPoint, let maxPoint {
+            self.minPoint = SIMD3<Float>(
+                Swift.min(minPoint.x, point.x),
+                Swift.min(minPoint.y, point.y),
+                Swift.min(minPoint.z, point.z)
+            )
+            self.maxPoint = SIMD3<Float>(
+                Swift.max(maxPoint.x, point.x),
+                Swift.max(maxPoint.y, point.y),
+                Swift.max(maxPoint.z, point.z)
+            )
+        } else {
+            self.minPoint = point
+            self.maxPoint = point
+        }
+    }
+
+    func finalized() -> SpatialBounds3D {
+        guard let minPoint, let maxPoint else {
+            return SpatialBounds3D(min: Point3(x: 0, y: 0, z: 0), max: Point3(x: 0, y: 0, z: 0))
+        }
+        return SpatialBounds3D(min: Point3(minPoint), max: Point3(maxPoint))
+    }
+}
+
+private extension SpatialBounds3D {
+    func expanding(with point: SIMD3<Float>) -> SpatialBounds3D {
+        SpatialBounds3D(
+            min: Point3(
+                x: Swift.min(min.x, point.x),
+                y: Swift.min(min.y, point.y),
+                z: Swift.min(min.z, point.z)
+            ),
+            max: Point3(
+                x: Swift.max(max.x, point.x),
+                y: Swift.max(max.y, point.y),
+                z: Swift.max(max.z, point.z)
+            )
+        )
+    }
+}
+
 private struct TextureSampler {
     private enum Mode {
         case image(width: Int, height: Int, pixels: [UInt8])
@@ -192,7 +245,7 @@ enum USDZLoader {
 
     static var extractionMode: ExtractionMode = .nearColorRich
 
-    static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
+    static func inspect(url: URL, config: AnalysisConfig, roi: SpatialBounds3D?) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
 
         // SceneKitの既存抽出処理とは独立した最小診断としてModel I/O情報を取得する。
@@ -216,6 +269,7 @@ enum USDZLoader {
         var skippedNoUVTriangles = 0
         var materialRecords: [MaterialInspectionRecord] = []
         var cachedSamples: [CachedCentroidSample] = []
+        var sourceBoundsAccumulator = BoundsAccumulator3D()
 
         for node in geometryNodes {
             guard let geometry = node.geometry else { continue }
@@ -225,6 +279,7 @@ enum USDZLoader {
             guard !localPositions.isEmpty else { continue }
 
             let worldPositions = localPositions.map { transformPoint($0, by: node.simdWorldTransform) }
+            sourceBoundsAccumulator.append(points: worldPositions)
             let uvSource = geometry.sources(for: .texcoord).first
             let hasUV = uvSource != nil
             let uvs = uvSource.map { decodeVector2(source: $0) } ?? []
@@ -251,6 +306,17 @@ enum USDZLoader {
                           i1 < worldPositions.count,
                           i2 < worldPositions.count else {
                         continue
+                    }
+
+                    // ROIが設定されている場合は、色サンプリングに入る前に
+                    // triangle AABB と ROI AABB の交差で早期除外する。
+                    if let roi {
+                        let triangleBounds = SpatialBounds3D(min: Point3(worldPositions[i0]), max: Point3(worldPositions[i0]))
+                            .expanding(with: worldPositions[i1])
+                            .expanding(with: worldPositions[i2])
+                        guard triangleBounds.intersects(roi) else {
+                            continue
+                        }
                     }
 
                     let centroidPosition = (worldPositions[i0] + worldPositions[i1] + worldPositions[i2]) / 3
@@ -361,6 +427,7 @@ enum USDZLoader {
         warnings.append("[ExtractionDebug] mode=\(extractionMode.rawValue) candidate=\(classifiedPoints.candidateCount) blue=\(classifiedPoints.blueCount) red=\(classifiedPoints.redCount)")
 
         let cachedStats = summarizeCachedSamples(cachedSamples)
+        let sourceBounds = sourceBoundsAccumulator.finalized()
         logCachedSampleHSVDiagnostics(cachedSamples, colorRichSamples: colorRichSamples, config: config)
 
         return LoadedModelPackage(
@@ -375,6 +442,7 @@ enum USDZLoader {
             materialRecords: materialRecords,
             modelIOMaterialRecords: modelIOMaterialRecords,
             cachedSamples: cachedSamples,
+            sourceBounds: sourceBounds,
             meanR: cachedStats.meanR,
             meanG: cachedStats.meanG,
             meanB: cachedStats.meanB,
@@ -418,6 +486,7 @@ enum USDZLoader {
             materialRecords: package.materialRecords,
             modelIOMaterialRecords: package.modelIOMaterialRecords,
             cachedSamples: package.cachedSamples,
+            sourceBounds: package.sourceBounds,
             meanR: package.meanR,
             meanG: package.meanG,
             meanB: package.meanB,
