@@ -245,7 +245,10 @@ enum USDZLoader {
 
     static var extractionMode: ExtractionMode = .nearColorRich
 
-    static func inspect(url: URL, config: AnalysisConfig, roi: SpatialBounds3D?) throws -> LoadedModelPackage {
+    static func inspect(url: URL,
+                        config: AnalysisConfig,
+                        roi: SpatialBounds3D?,
+                        cropBrush: CropBrushState?) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
 
         // SceneKitの既存抽出処理とは独立した最小診断としてModel I/O情報を取得する。
@@ -405,8 +408,9 @@ enum USDZLoader {
             }
         }
 
-        let colorRichSamples = cachedSamples.filter { $0.hsv.saturation >= 0.05 }
-        let classifiedPoints = classifySamples(cachedSamples, config: config)
+        let activeSamples = activeSamples(from: cachedSamples, brush: cropBrush)
+        let colorRichSamples = activeSamples.filter { $0.hsv.saturation >= 0.05 }
+        let classifiedPoints = classifySamples(activeSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
         let rawBlueCount = classifiedPoints.blueCount
@@ -428,7 +432,7 @@ enum USDZLoader {
 
         let cachedStats = summarizeCachedSamples(cachedSamples)
         let sourceBounds = sourceBoundsAccumulator.finalized()
-        logCachedSampleHSVDiagnostics(cachedSamples, colorRichSamples: colorRichSamples, config: config)
+        logCachedSampleHSVDiagnostics(activeSamples, colorRichSamples: colorRichSamples, config: config)
 
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
@@ -442,6 +446,7 @@ enum USDZLoader {
             materialRecords: materialRecords,
             modelIOMaterialRecords: modelIOMaterialRecords,
             cachedSamples: cachedSamples,
+            activeSamples: activeSamples,
             sourceBounds: sourceBounds,
             meanR: cachedStats.meanR,
             meanG: cachedStats.meanG,
@@ -457,8 +462,11 @@ enum USDZLoader {
         )
     }
 
-    static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
-        let classifiedPoints = classifySamples(package.cachedSamples, config: config)
+    static func reextractMasks(from package: LoadedModelPackage,
+                               config: AnalysisConfig,
+                               cropBrush: CropBrushState?) -> LoadedModelPackage {
+        let activeSamples = activeSamples(from: package.cachedSamples, brush: cropBrush)
+        let classifiedPoints = classifySamples(activeSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
 
@@ -486,6 +494,7 @@ enum USDZLoader {
             materialRecords: package.materialRecords,
             modelIOMaterialRecords: package.modelIOMaterialRecords,
             cachedSamples: package.cachedSamples,
+            activeSamples: activeSamples,
             sourceBounds: package.sourceBounds,
             meanR: package.meanR,
             meanG: package.meanG,
@@ -520,6 +529,14 @@ enum USDZLoader {
         }
 
         return samples.filter { selectedIDs.contains($0.id) }
+    }
+
+    /// ブラシ未設定時は全サンプルを有効化し、
+    /// ブラシがある場合はその surface mask 結果を有効サンプルとして使う。
+    /// これにより ROI 再解析後も同じブラシを再適用できる。
+    static func activeSamples(from samples: [CachedCentroidSample], brush: CropBrushState?) -> [CachedCentroidSample] {
+        guard let brush, !brush.stamps.isEmpty else { return samples }
+        return selectedSamples(from: samples, brush: brush)
     }
 
     static func autoROI(from selected: [CachedCentroidSample], marginMeters: Float) -> SpatialBounds3D? {

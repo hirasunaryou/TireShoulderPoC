@@ -66,10 +66,10 @@ final class AppModel: ObservableObject {
             let config = self.config
 
             let package = try await Task.detached(priority: .userInitiated) {
-                try USDZLoader.inspect(url: localURL, config: config, roi: nil)
+                try USDZLoader.inspect(url: localURL, config: config, roi: nil, cropBrush: nil)
             }.value
 
-            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, cropBrush: nil, package: package)
+            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, surfaceMasks: SurfaceMaskSet(), package: package)
 
             switch kind {
             case .new:
@@ -91,12 +91,12 @@ final class AppModel: ObservableObject {
         switch kind {
         case .new:
             guard var input = newInput else { return }
-            input.package = USDZLoader.reextractMasks(from: input.package, config: config)
+            input.package = USDZLoader.reextractMasks(from: input.package, config: config, cropBrush: input.surfaceMasks.crop)
             newInput = input
             statusMessage = "新品: キャッシュ済みサンプルから再抽出しました。青 \(input.package.bluePoints.count) / 赤 \(input.package.redPoints.count)"
         case .used:
             guard var input = usedInput else { return }
-            input.package = USDZLoader.reextractMasks(from: input.package, config: config)
+            input.package = USDZLoader.reextractMasks(from: input.package, config: config, cropBrush: input.surfaceMasks.crop)
             usedInput = input
             statusMessage = "走行品: キャッシュ済みサンプルから再抽出しました。青 \(input.package.bluePoints.count) / 赤 \(input.package.redPoints.count)"
         }
@@ -104,7 +104,10 @@ final class AppModel: ObservableObject {
 
     func setCropBrush(kind: ModelKind, brush: CropBrushState?) {
         guard var input = modelInput(for: kind) else { return }
-        input.cropBrush = brush
+        input.surfaceMasks.crop = brush
+        // ブラシは AABB seed ではなく persistent surface mask として扱う。
+        // ここで activeSamples ベースの package を即時更新し、表示/統計を追随させる。
+        input.package = USDZLoader.reextractMasks(from: input.package, config: config, cropBrush: brush)
         setModelInput(input, for: kind)
     }
 
@@ -113,7 +116,7 @@ final class AppModel: ObservableObject {
     }
 
     func previewCropBrushSelection(kind: ModelKind) -> CropBrushPreview? {
-        guard let input = modelInput(for: kind), let brush = input.cropBrush else { return nil }
+        guard let input = modelInput(for: kind), let brush = input.surfaceMasks.crop else { return nil }
         let selected = USDZLoader.selectedSamples(from: input.package.cachedSamples, brush: brush)
         let autoROI = USDZLoader.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
         return CropBrushPreview(
@@ -125,7 +128,7 @@ final class AppModel: ObservableObject {
 
     func applyCropBrushAsROI(kind: ModelKind, reason: String = "Crop Brushを適用") async -> ROIReinspectDelta? {
         guard let input = modelInput(for: kind),
-              let brush = input.cropBrush else { return nil }
+              let brush = input.surfaceMasks.crop else { return nil }
         let selected = USDZLoader.selectedSamples(from: input.package.cachedSamples, brush: brush)
         let autoROI = USDZLoader.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
         setROI(kind: kind, roi: autoROI)
@@ -157,9 +160,10 @@ final class AppModel: ObservableObject {
             let config = self.config
             let fileURL = input.fileURL
             let roi = input.roi
+            let cropBrush = input.surfaceMasks.crop
             let previousPackage = input.package
             let package = try await Task.detached(priority: .userInitiated) {
-                try USDZLoader.inspect(url: fileURL, config: config, roi: roi)
+                try USDZLoader.inspect(url: fileURL, config: config, roi: roi, cropBrush: cropBrush)
             }.value
             input.package = package
             setModelInput(input, for: kind)

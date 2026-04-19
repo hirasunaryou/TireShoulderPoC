@@ -18,7 +18,9 @@ struct InteractiveSceneKitView: UIViewRepresentable {
         view.pointOfView = pointOfView
         view.backgroundColor = .clear
         view.autoenablesDefaultLighting = true
-        view.allowsCameraControl = !isBrushEditing
+        // Brush編集中でも視点調整（回転/ズーム）を許可する。
+        // これにより狙いたい小領域を拡大してからスタンプできる。
+        view.allowsCameraControl = true
 
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.cancelsTouchesInView = false
@@ -36,7 +38,7 @@ struct InteractiveSceneKitView: UIViewRepresentable {
     func updateUIView(_ uiView: SCNView, context: Context) {
         uiView.scene = scene
         uiView.pointOfView = pointOfView
-        uiView.allowsCameraControl = !isBrushEditing
+        uiView.allowsCameraControl = true
         context.coordinator.parent = self
     }
 
