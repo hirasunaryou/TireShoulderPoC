@@ -358,6 +358,7 @@ enum USDZLoader {
         }
 
         let cachedStats = summarizeCachedSamples(cachedSamples)
+        logCachedSampleHSVDiagnostics(cachedSamples, config: config)
 
         return LoadedModelPackage(
             displayName: url.deletingPathExtension().lastPathComponent,
@@ -561,6 +562,90 @@ enum USDZLoader {
             minValueObserved: minValue,
             maxValueObserved: maxValue
         )
+    }
+
+    private static func logCachedSampleHSVDiagnostics(_ samples: [CachedCentroidSample], config: AnalysisConfig) {
+        var hueHistogram = [Int](repeating: 0, count: 12)
+        var saturationAtLeast005 = 0
+        var saturationAtLeast010 = 0
+        var valueAtLeast020 = 0
+        var blueRuleCount = 0
+        var redRuleCount = 0
+
+        for sample in samples {
+            let hue = sample.hsv.hue
+            let saturation = sample.hsv.saturation
+            let value = sample.hsv.value
+
+            let normalizedHue = min(max(hue, 0), 359.999_9)
+            let binIndex = min(11, Int(normalizedHue / 30))
+            hueHistogram[binIndex] += 1
+
+            if saturation >= 0.05 { saturationAtLeast005 += 1 }
+            if saturation >= 0.10 { saturationAtLeast010 += 1 }
+            if value >= 0.20 { valueAtLeast020 += 1 }
+
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                blueRuleCount += 1
+            case .red:
+                redRuleCount += 1
+            case .other:
+                break
+            }
+        }
+
+        let histogramSummary = hueHistogram.enumerated()
+            .map { index, count -> String in
+                let start = index * 30
+                let end = start + 30
+                return "\(start)-\(end):\(count)"
+            }
+            .joined(separator: " ")
+
+        print("[HSV.debug] cachedSamples=\(samples.count)")
+        print("[HSV.debug] hueHistogram(12bins) \(histogramSummary)")
+        print("[HSV.debug] sat>=0.05=\(saturationAtLeast005) sat>=0.10=\(saturationAtLeast010) val>=0.20=\(valueAtLeast020)")
+        print("[HSV.debug] blueRule=\(blueRuleCount) redRule=\(redRuleCount)")
+
+        let representativeSamples = representativeHSVDebugSamples(samples, maxCount: 20)
+        for (index, sample) in representativeSamples.enumerated() {
+            print(
+                String(
+                    format: "[HSV.sample %02d] h=%.1f s=%.3f v=%.3f rgb=(%.3f,%.3f,%.3f)",
+                    index,
+                    sample.hsv.hue,
+                    sample.hsv.saturation,
+                    sample.hsv.value,
+                    sample.rgb.x,
+                    sample.rgb.y,
+                    sample.rgb.z
+                )
+            )
+        }
+    }
+
+    private static func representativeHSVDebugSamples(
+        _ samples: [CachedCentroidSample],
+        maxCount: Int
+    ) -> [CachedCentroidSample] {
+        guard !samples.isEmpty, maxCount > 0 else { return [] }
+        guard samples.count > maxCount else { return samples }
+
+        var chosenIndices: [Int] = []
+        chosenIndices.reserveCapacity(maxCount)
+        let denominator = max(maxCount - 1, 1)
+        let upperBound = samples.count - 1
+
+        for i in 0..<maxCount {
+            let raw = (i * upperBound) / denominator
+            let index = min(upperBound, max(0, raw))
+            if chosenIndices.last != index {
+                chosenIndices.append(index)
+            }
+        }
+
+        return chosenIndices.map { samples[$0] }
     }
 
     private static func collectGeometryNodes(from node: SCNNode, into storage: inout [SCNNode]) {
