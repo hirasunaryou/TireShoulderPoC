@@ -20,6 +20,10 @@ struct DebugInspectorView: View {
     @State private var autoApplyROI = false
     @State private var lastDelta: ROIReinspectDelta?
     @State private var autoApplyTask: Task<Void, Never>?
+    @State private var isBrushEditing = false
+    @State private var brushPaintMode: BrushPaintMode = .add
+    @State private var brushRadiusMeters: Float = CropBrushState.default.radiusMeters
+    @State private var brushAutoROIMarginMeters: Float = CropBrushState.default.autoROIMarginMeters
 
     // ROI編集用の正規化値(0...1)。
     @State private var roiNormMinX: Float = 0
@@ -43,6 +47,7 @@ struct DebugInspectorView: View {
                     warningSection
                     thresholdEditor
                     roiEditor
+                    cropBrushEditor
                     reextractButtonRow
                     materialRecordSection
                 }
@@ -57,6 +62,7 @@ struct DebugInspectorView: View {
         content
             .onAppear {
                 syncROISlidersFromCurrentInput()
+                syncBrushControlsFromCurrentInput()
                 applyRenderModeDefaults(renderMode)
                 refreshInspectorScene()
                 refreshROIPreviewScene()
@@ -85,6 +91,7 @@ struct DebugInspectorView: View {
             .onChange(of: focusMode) { _, _ in refreshInspectorScene() }
             .onChange(of: input.package.sourceBounds) { _, _ in
                 syncROISlidersFromCurrentInput()
+                syncBrushControlsFromCurrentInput()
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
@@ -93,12 +100,15 @@ struct DebugInspectorView: View {
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
+            .onChange(of: input.cropBrush?.stamps.count ?? 0) { _, _ in refreshInspectorScene() }
             .onChange(of: roiNormMinX) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMaxX) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMinY) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMaxY) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMinZ) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMaxZ) { _, _ in handleROISliderChanged() }
+            .onChange(of: brushRadiusMeters) { _, _ in updateBrushParametersOnly() }
+            .onChange(of: brushAutoROIMarginMeters) { _, _ in updateBrushParametersOnly() }
     }
 
     /// 自動適用のデバウンス制御だけを単独化して推論を軽くする。
@@ -115,7 +125,14 @@ struct DebugInspectorView: View {
     private var inspectorViewport: some View {
         Group {
             if let inspectorScene {
-                SceneKitOverlayView(scene: inspectorScene)
+                InteractiveSceneKitView(
+                    scene: inspectorScene,
+                    cameraNodeName: "InspectorCamera",
+                    isBrushEditing: isBrushEditing,
+                    minStampDistanceMeters: max(brushRadiusMeters * 0.45, 0.0007)
+                ) { point in
+                    appendBrushStamp(at: point)
+                }
                     .frame(height: 280)
             } else if let sceneError {
                 Text(sceneError)
@@ -304,7 +321,61 @@ struct DebugInspectorView: View {
             Label("未適用pendingROI", systemImage: "square.dashed.inset.filled")
                 .font(.caption2)
                 .foregroundStyle(.orange)
+            Label("Brush autoROI", systemImage: "scribble.variable")
+                .font(.caption2)
+                .foregroundStyle(.teal)
             Spacer()
+        }
+    }
+
+    private var cropBrushEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Crop Brush (MVP)")
+                .font(.subheadline.bold())
+
+            Toggle("Brush編集モード", isOn: $isBrushEditing)
+                .font(.caption)
+
+            Picker("Brush Mode", selection: $brushPaintMode) {
+                ForEach(BrushPaintMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            sliderRow(label: "Brush Radius (m)", value: $brushRadiusMeters, range: 0.001 ... 0.02)
+            sliderRow(label: "Auto ROI Margin (m)", value: $brushAutoROIMarginMeters, range: 0.001 ... 0.02)
+
+            let preview = appModel.previewCropBrushSelection(kind: kind)
+            Text("selected samples: \(preview?.selectedSampleCount ?? 0)")
+                .font(.caption)
+            if let autoROI = preview?.autoROI {
+                boundsText(title: "brushAutoROI", bounds: autoROI)
+            } else {
+                Text("brushAutoROI: nil (未選択)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("BrushからROI適用") {
+                    Task {
+                        lastDelta = await appModel.applyCropBrushAsROI(kind: kind)
+                        refreshInspectorScene()
+                        refreshROIPreviewScene()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(preview?.autoROI == nil)
+
+                Button("Brushクリア", role: .destructive) {
+                    appModel.clearCropBrush(kind: kind)
+                    refreshInspectorScene()
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
         }
     }
 
@@ -424,7 +495,9 @@ struct DebugInspectorView: View {
                 showROIBounds: showROIBounds,
                 focusMode: focusMode,
                 pendingROI: pendingROI,
-                appliedROI: sourceInput.roi
+                appliedROI: sourceInput.roi,
+                brushSelectedPoints: appModel.previewCropBrushSelection(kind: kind)?.selectedPoints ?? [],
+                brushAutoROI: appModel.previewCropBrushSelection(kind: kind)?.autoROI
             )
             sceneError = nil
         } catch {
@@ -448,7 +521,9 @@ struct DebugInspectorView: View {
                 showROIBounds: true,
                 focusMode: .roi,
                 pendingROI: pendingROI,
-                appliedROI: sourceInput.roi
+                appliedROI: sourceInput.roi,
+                brushSelectedPoints: appModel.previewCropBrushSelection(kind: kind)?.selectedPoints ?? [],
+                brushAutoROI: appModel.previewCropBrushSelection(kind: kind)?.autoROI
             )
             sceneError = nil
         } catch {
@@ -467,6 +542,31 @@ struct DebugInspectorView: View {
         roiNormMaxY = normalize(roi.max.y, sourceMin: bounds.min.y, sourceMax: bounds.max.y)
         roiNormMinZ = normalize(roi.min.z, sourceMin: bounds.min.z, sourceMax: bounds.max.z)
         roiNormMaxZ = normalize(roi.max.z, sourceMin: bounds.min.z, sourceMax: bounds.max.z)
+    }
+
+    private func syncBrushControlsFromCurrentInput() {
+        let brush = currentInput.cropBrush ?? CropBrushState.default
+        brushRadiusMeters = brush.radiusMeters
+        brushAutoROIMarginMeters = brush.autoROIMarginMeters
+    }
+
+    private func updateBrushParametersOnly() {
+        var brush = currentInput.cropBrush ?? CropBrushState.default
+        brush.radiusMeters = brushRadiusMeters
+        brush.autoROIMarginMeters = brushAutoROIMarginMeters
+        appModel.setCropBrush(kind: kind, brush: brush)
+        refreshInspectorScene()
+    }
+
+    private func appendBrushStamp(at point: Point3) {
+        var brush = currentInput.cropBrush ?? CropBrushState.default
+        brush.radiusMeters = brushRadiusMeters
+        brush.autoROIMarginMeters = brushAutoROIMarginMeters
+        brush.stamps.append(
+            BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: brushPaintMode)
+        )
+        appModel.setCropBrush(kind: kind, brush: brush)
+        refreshInspectorScene()
     }
 
     private func makeROIFromCurrentSliders(sourceBounds: SpatialBounds3D) -> SpatialBounds3D {
