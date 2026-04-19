@@ -37,6 +37,57 @@ struct Point3: Hashable, Sendable {
     }
 }
 
+/// 3D空間のAABB(軸平行境界ボックス)。
+/// ROI指定や、読み込んだモデル全体のsource bounds保存に使う。
+struct SpatialBounds3D: Hashable, Sendable {
+    var min: Point3
+    var max: Point3
+
+    init(min: Point3, max: Point3) {
+        self.min = Point3(
+            x: Swift.min(min.x, max.x),
+            y: Swift.min(min.y, max.y),
+            z: Swift.min(min.z, max.z)
+        )
+        self.max = Point3(
+            x: Swift.max(min.x, max.x),
+            y: Swift.max(min.y, max.y),
+            z: Swift.max(min.z, max.z)
+        )
+    }
+
+    init?(points: [SIMD3<Float>]) {
+        guard let first = points.first else { return nil }
+
+        var minX = first.x
+        var minY = first.y
+        var minZ = first.z
+        var maxX = first.x
+        var maxY = first.y
+        var maxZ = first.z
+
+        for point in points.dropFirst() {
+            minX = Swift.min(minX, point.x)
+            minY = Swift.min(minY, point.y)
+            minZ = Swift.min(minZ, point.z)
+            maxX = Swift.max(maxX, point.x)
+            maxY = Swift.max(maxY, point.y)
+            maxZ = Swift.max(maxZ, point.z)
+        }
+
+        self.init(
+            min: Point3(x: minX, y: minY, z: minZ),
+            max: Point3(x: maxX, y: maxY, z: maxZ)
+        )
+    }
+
+    func intersects(_ other: SpatialBounds3D) -> Bool {
+        !(max.x < other.min.x || min.x > other.max.x ||
+          max.y < other.min.y || min.y > other.max.y ||
+          max.z < other.min.z || min.z > other.max.z)
+    }
+}
+
 struct HSVColor: Sendable {
     var hue: Float
     var saturation: Float
@@ -112,6 +163,7 @@ struct LoadedModelPackage: Sendable {
     let materialRecords: [MaterialInspectionRecord]
     let modelIOMaterialRecords: [ModelIOMaterialInspectionRecord]
     let cachedSamples: [CachedCentroidSample]
+    let sourceBounds: SpatialBounds3D
     var sampledPoints: [Point3] { cachedSamples.map(\.worldPosition) }
     var colorRichPoints: [Point3] { cachedSamples.filter { $0.hsv.saturation >= 0.05 }.map(\.worldPosition) }
     let meanR: Float
@@ -130,6 +182,7 @@ struct LoadedModelPackage: Sendable {
 struct ModelInput {
     let kind: ModelKind
     let fileURL: URL
+    var roi: SpatialBounds3D?
     var package: LoadedModelPackage
 }
 
