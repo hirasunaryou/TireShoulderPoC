@@ -10,8 +10,13 @@ struct DebugInspectorView: View {
     @State private var inspectorScene: SCNScene?
     @State private var roiPreviewScene: SCNScene?
     @State private var sceneError: String?
+    @State private var renderMode: InspectorRenderMode = .texturedMesh
+    @State private var focusMode: InspectorFocusMode = .model
     @State private var showBluePoints = true
     @State private var showRedPoints = true
+    @State private var showSampledPoints = false
+    @State private var showColorRichPoints = false
+    @State private var showROIBounds = false
     @State private var autoApplyROI = false
     @State private var lastDelta: ROIReinspectDelta?
     @State private var autoApplyTask: Task<Void, Never>?
@@ -25,91 +30,185 @@ struct DebugInspectorView: View {
     @State private var roiNormMaxZ: Float = 1
 
     var body: some View {
-        GroupBox("\(kind.rawValue) Debug Inspector") {
-            VStack(alignment: .leading, spacing: 10) {
-                if let inspectorScene {
-                    SceneKitOverlayView(scene: inspectorScene)
-                        .frame(height: 280)
-                } else if let sceneError {
-                    Text(sceneError)
+        bindAutoApplyLifecycle(
+            bindROILifecycle(
+                bindSceneLifecycle(
+            GroupBox("\(kind.rawValue) Debug Inspector") {
+                VStack(alignment: .leading, spacing: 10) {
+                    inspectorViewport
+                    renderAndFocusControls
+                    visibilityToggles
+                    maskLocatorLegend
+                    packageStats
+                    warningSection
+                    thresholdEditor
+                    roiEditor
+                    reextractButtonRow
+                    materialRecordSection
+                }
+            }
+                )
+            )
+        )
+    }
+
+    /// SwiftUIの型推論負荷を減らすため、ライフサイクル修飾子を責務単位で分割。
+    private func bindSceneLifecycle<Content: View>(_ content: Content) -> some View {
+        content
+            .onAppear {
+                syncROISlidersFromCurrentInput()
+                applyRenderModeDefaults(renderMode)
+                refreshInspectorScene()
+                refreshROIPreviewScene()
+            }
+            .onChange(of: showBluePoints) { _, _ in refreshInspectorScene() }
+            .onChange(of: showRedPoints) { _, _ in refreshInspectorScene() }
+            .onChange(of: showSampledPoints) { _, _ in refreshInspectorScene() }
+            .onChange(of: showColorRichPoints) { _, _ in refreshInspectorScene() }
+            .onChange(of: showROIBounds) { _, _ in
+                refreshInspectorScene()
+                refreshROIPreviewScene()
+            }
+            .onDisappear {
+                autoApplyTask?.cancel()
+                autoApplyTask = nil
+            }
+    }
+
+    /// レンダーモードやROI適用状態に追随する再描画イベントを分離。
+    private func bindROILifecycle<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: renderMode) { _, newMode in
+                applyRenderModeDefaults(newMode)
+                refreshInspectorScene()
+            }
+            .onChange(of: focusMode) { _, _ in refreshInspectorScene() }
+            .onChange(of: input.package.sourceBounds) { _, _ in
+                syncROISlidersFromCurrentInput()
+                refreshInspectorScene()
+                refreshROIPreviewScene()
+            }
+            .onChange(of: input.roi) { _, _ in
+                syncROISlidersFromCurrentInput()
+                refreshInspectorScene()
+                refreshROIPreviewScene()
+            }
+            .onChange(of: roiNormMinX) { _, _ in handleROISliderChanged() }
+            .onChange(of: roiNormMaxX) { _, _ in handleROISliderChanged() }
+            .onChange(of: roiNormMinY) { _, _ in handleROISliderChanged() }
+            .onChange(of: roiNormMaxY) { _, _ in handleROISliderChanged() }
+            .onChange(of: roiNormMinZ) { _, _ in handleROISliderChanged() }
+            .onChange(of: roiNormMaxZ) { _, _ in handleROISliderChanged() }
+    }
+
+    /// 自動適用のデバウンス制御だけを単独化して推論を軽くする。
+    private func bindAutoApplyLifecycle<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: autoApplyROI) { _, isEnabled in
+                autoApplyTask?.cancel()
+                if isEnabled && hasUnappliedROIChanges {
+                    scheduleAutoApply()
+                }
+            }
+    }
+
+    private var inspectorViewport: some View {
+        Group {
+            if let inspectorScene {
+                SceneKitOverlayView(scene: inspectorScene)
+                    .frame(height: 280)
+            } else if let sceneError {
+                Text(sceneError)
+                    .foregroundStyle(.red)
+            } else {
+                ProgressView()
+            }
+        }
+    }
+
+    private var renderAndFocusControls: some View {
+        Group {
+            Picker("Render Mode", selection: $renderMode) {
+                ForEach(InspectorRenderMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Focus", selection: $focusMode) {
+                ForEach(InspectorFocusMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var visibilityToggles: some View {
+        Group {
+            Toggle("青ポイント表示", isOn: $showBluePoints)
+            Toggle("赤ポイント表示", isOn: $showRedPoints)
+            Toggle("Sampled points表示", isOn: $showSampledPoints)
+            Toggle("Color-Rich points表示", isOn: $showColorRichPoints)
+            Toggle("ROI bounds表示", isOn: $showROIBounds)
+        }
+    }
+
+    private var maskLocatorLegend: some View {
+        Group {
+            if renderMode == .maskLocator {
+                HStack(spacing: 10) {
+                    Label("Candidates: \(input.package.colorRichPoints.count)", systemImage: "circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                    Label("Blue: \(input.package.bluePoints.count)", systemImage: "circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                    Label("Red: \(input.package.redPoints.count)", systemImage: "circle.fill")
+                        .font(.caption2)
                         .foregroundStyle(.red)
-                } else {
-                    ProgressView()
                 }
+            }
+        }
+    }
 
-                Toggle("青ポイント表示", isOn: $showBluePoints)
-                Toggle("赤ポイント表示", isOn: $showRedPoints)
+    private var packageStats: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("geometryNodes: \(input.package.geometryNodeCount)")
+            Text("totalSamples: \(input.package.totalSamples)")
+            Text("rawBlue/rawRed: \(input.package.rawBlueCount) / \(input.package.rawRedCount)")
+            Text("reducedBlue/reducedRed: \(input.package.bluePoints.count) / \(input.package.redPoints.count)")
+            Text("skippedNoUVTriangles: \(input.package.skippedNoUVTriangles)")
+            Text("cachedSamples: \(input.package.cachedSamples.count)")
+        }
+        .font(.footnote)
+    }
 
+    private var warningSection: some View {
+        Group {
+            if !input.package.warnings.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("geometryNodes: \(input.package.geometryNodeCount)")
-                    Text("totalSamples: \(input.package.totalSamples)")
-                    Text("rawBlue/rawRed: \(input.package.rawBlueCount) / \(input.package.rawRedCount)")
-                    Text("reducedBlue/reducedRed: \(input.package.bluePoints.count) / \(input.package.redPoints.count)")
-                    Text("skippedNoUVTriangles: \(input.package.skippedNoUVTriangles)")
-                    Text("cachedSamples: \(input.package.cachedSamples.count)")
-                }
-                .font(.footnote)
-
-                if !input.package.warnings.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Warnings")
-                            .font(.subheadline.bold())
-                        ForEach(input.package.warnings, id: \.self) { warning in
-                            Text("• \(warning)")
-                                .font(.footnote)
-                                .foregroundStyle(.orange)
-                        }
+                    Text("Warnings")
+                        .font(.subheadline.bold())
+                    ForEach(input.package.warnings, id: \.self) { warning in
+                        Text("• \(warning)")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
                     }
                 }
-
-                thresholdEditor
-                roiEditor
-
-                HStack {
-                    Button("キャッシュから再抽出") {
-                        appModel.reextractMasks(kind: kind)
-                        refreshInspectorScene()
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Spacer()
-                }
-
-                materialRecordSection
             }
         }
-        .onAppear {
-            syncROISlidersFromCurrentInput()
-            refreshInspectorScene()
-            refreshROIPreviewScene()
-        }
-        .onChange(of: showBluePoints) { _, _ in refreshInspectorScene() }
-        .onChange(of: showRedPoints) { _, _ in refreshInspectorScene() }
-        .onChange(of: input.package.sourceBounds) { _, _ in
-            syncROISlidersFromCurrentInput()
-            refreshInspectorScene()
-            refreshROIPreviewScene()
-        }
-        .onChange(of: input.roi) { _, _ in
-            syncROISlidersFromCurrentInput()
-            refreshInspectorScene()
-            refreshROIPreviewScene()
-        }
-        .onChange(of: roiNormMinX) { _, _ in handleROISliderChanged() }
-        .onChange(of: roiNormMaxX) { _, _ in handleROISliderChanged() }
-        .onChange(of: roiNormMinY) { _, _ in handleROISliderChanged() }
-        .onChange(of: roiNormMaxY) { _, _ in handleROISliderChanged() }
-        .onChange(of: roiNormMinZ) { _, _ in handleROISliderChanged() }
-        .onChange(of: roiNormMaxZ) { _, _ in handleROISliderChanged() }
-        .onChange(of: autoApplyROI) { _, isEnabled in
-            autoApplyTask?.cancel()
-            if isEnabled && hasUnappliedROIChanges {
-                scheduleAutoApply()
+    }
+
+    private var reextractButtonRow: some View {
+        HStack {
+            Button("キャッシュから再抽出") {
+                appModel.reextractMasks(kind: kind)
+                refreshInspectorScene()
             }
-        }
-        .onDisappear {
-            autoApplyTask?.cancel()
-            autoApplyTask = nil
+            .buttonStyle(.borderedProminent)
+
+            Spacer()
         }
     }
 
@@ -135,7 +234,7 @@ struct DebugInspectorView: View {
                 .font(.subheadline.bold())
 
             if let roiPreviewScene {
-                SceneKitOverlayView(scene: roiPreviewScene, pointOfView: roiPreviewScene.pointOfView)
+                SceneKitOverlayView(scene: roiPreviewScene)
                     .frame(height: 190)
                 roiLegend
             }
@@ -317,8 +416,13 @@ struct DebugInspectorView: View {
             inspectorScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
+                renderMode: renderMode,
                 showBlue: showBluePoints,
                 showRed: showRedPoints,
+                showSampledPoints: showSampledPoints,
+                showColorRichPoints: showColorRichPoints,
+                showROIBounds: showROIBounds,
+                focusMode: focusMode,
                 pendingROI: pendingROI,
                 appliedROI: sourceInput.roi
             )
@@ -336,8 +440,13 @@ struct DebugInspectorView: View {
             roiPreviewScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
+                renderMode: .texturedMesh,
                 showBlue: true,
                 showRed: true,
+                showSampledPoints: false,
+                showColorRichPoints: false,
+                showROIBounds: true,
+                focusMode: .roi,
                 pendingROI: pendingROI,
                 appliedROI: sourceInput.roi
             )
@@ -436,5 +545,26 @@ struct DebugInspectorView: View {
         abs(lhs.max.x - rhs.max.x) < epsilon &&
         abs(lhs.max.y - rhs.max.y) < epsilon &&
         abs(lhs.max.z - rhs.max.z) < epsilon
+    }
+
+    private func applyRenderModeDefaults(_ mode: InspectorRenderMode) {
+        // モード切替時に「まず見たい状態」へ戻すデフォルトを定義。
+        switch mode {
+        case .texturedMesh:
+            showSampledPoints = false
+            showColorRichPoints = false
+            showBluePoints = true
+            showRedPoints = true
+        case .sampledRGB:
+            showSampledPoints = false
+            showColorRichPoints = false
+            showBluePoints = true
+            showRedPoints = true
+        case .maskLocator:
+            showSampledPoints = false
+            showColorRichPoints = true
+            showBluePoints = true
+            showRedPoints = true
+        }
     }
 }
