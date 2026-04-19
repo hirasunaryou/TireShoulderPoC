@@ -112,6 +112,8 @@ struct LoadedModelPackage: Sendable {
     let materialRecords: [MaterialInspectionRecord]
     let modelIOMaterialRecords: [ModelIOMaterialInspectionRecord]
     let cachedSamples: [CachedCentroidSample]
+    var sampledPoints: [Point3] { cachedSamples.map(\.worldPosition) }
+    var colorRichPoints: [Point3] { cachedSamples.filter { $0.hsv.saturation >= 0.05 }.map(\.worldPosition) }
     let meanR: Float
     let meanG: Float
     let meanB: Float
