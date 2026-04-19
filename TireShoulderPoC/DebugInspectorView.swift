@@ -21,11 +21,16 @@ struct DebugInspectorView: View {
     @State private var lastDelta: ROIReinspectDelta?
     @State private var autoApplyTask: Task<Void, Never>?
     @State private var isBrushEditing = false
+    @State private var isManualRegionEditing = false
+    @State private var manualRegionRole: ManualRegionRole = .alignment
     @State private var brushMode: BrushPaintMode = .add
+    @State private var manualBrushMode: BrushPaintMode = .add
     @State private var brushInteractionMode: InteractiveSceneKitView.BrushInteractionMode = .paint
     @State private var brushRadiusMeters: Float = CropBrushState.default.radiusMeters
     @State private var brushAutoROIMarginMeters: Float = CropBrushState.default.autoROIMarginMeters
     @State private var cropBrushPreview: CropBrushPreview?
+    @State private var alignmentPreview: ManualRegionPreview?
+    @State private var comparisonPreview: ManualRegionPreview?
     @State private var persistedCameraTransform: simd_float4x4?
     @State private var shouldAutoFrameOnNextRefresh = true
     @State private var latestBrushStamp: BrushStamp3D?
@@ -55,6 +60,7 @@ struct DebugInspectorView: View {
                     ThresholdEditorSection { thresholdEditor }
                     ROIEditorSection { roiEditor }
                     CropBrushSection { cropBrushEditor }
+                    CropBrushSection { manualRegionEditor }
                     reextractButtonRow
                     MaterialInspectionSection { materialRecordSection }
                 }
@@ -72,6 +78,7 @@ struct DebugInspectorView: View {
                 syncBrushControlsFromCurrentInput()
                 applyRenderModeDefaults(renderMode)
                 refreshCropBrushPreview()
+                refreshManualRegionPreviews()
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
@@ -100,26 +107,47 @@ struct DebugInspectorView: View {
             .onChange(of: input.package.sourceBounds) { _, _ in
                 syncROISlidersFromCurrentInput()
                 refreshCropBrushPreview()
+                refreshManualRegionPreviews()
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
             .onChange(of: input.roi) { _, _ in
                 syncROISlidersFromCurrentInput()
                 refreshCropBrushPreview()
+                refreshManualRegionPreviews()
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
             .onChange(of: isBrushEditing) { _, isEditing in
                 if isEditing {
+                    isManualRegionEditing = false
+                    brushInteractionMode = .paint
+                    shouldAutoFrameOnNextRefresh = true
+                }
+                refreshInspectorScene()
+            }
+            .onChange(of: isManualRegionEditing) { _, isEditing in
+                if isEditing {
+                    isBrushEditing = false
                     brushInteractionMode = .paint
                     shouldAutoFrameOnNextRefresh = true
                 }
                 refreshInspectorScene()
             }
             .onChange(of: brushMode) { _, _ in refreshInspectorScene() }
+            .onChange(of: manualBrushMode) { _, _ in refreshInspectorScene() }
+            .onChange(of: manualRegionRole) { _, _ in
+                brushRadiusMeters = currentManualBrush?.radiusMeters ?? brushRadiusMeters
+                refreshManualRegionPreviews()
+                refreshInspectorScene()
+            }
             .onChange(of: brushInteractionMode) { _, _ in refreshInspectorScene() }
             .onChange(of: brushRadiusMeters) { _, newValue in
-                updateCropBrushRadius(newValue)
+                if isManualRegionEditing {
+                    refreshInspectorScene()
+                } else {
+                    updateCropBrushRadius(newValue)
+                }
             }
             .onChange(of: brushAutoROIMarginMeters) { _, newValue in
                 updateCropBrushMargin(newValue)
@@ -150,12 +178,12 @@ struct DebugInspectorView: View {
                     SceneKitOverlayView(
                         scene: inspectorScene,
                         pointOfView: inspectorScene.rootNode.childNode(withName: "InspectorCamera", recursively: true),
-                        isBrushEditing: isBrushEditing,
+                        isBrushEditing: isEditingAnyBrush,
                         brushInteractionMode: brushInteractionMode,
                         minStampDistance: max(brushRadiusMeters * 0.55, 0.0008),
                         cameraTransform: persistedCameraTransform,
-                        onSurfaceHit: isBrushEditing ? { point in
-                            addBrushStamp(at: point)
+                        onSurfaceHit: isEditingAnyBrush ? { point in
+                            addActiveBrushStamp(at: point)
                         } : nil,
                         onCameraTransformChanged: { transform in
                             persistedCameraTransform = transform
@@ -164,7 +192,7 @@ struct DebugInspectorView: View {
                             fitToModel()
                         }
                     )
-                    if isBrushEditing {
+                    if isEditingAnyBrush {
                         brushHelpOverlay
                     }
                 }
@@ -421,6 +449,61 @@ struct DebugInspectorView: View {
         }
     }
 
+    private var manualRegionEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Manual Regions (MVP)")
+                .font(.subheadline.bold())
+
+            Picker("編集対象", selection: $manualRegionRole) {
+                ForEach(ManualRegionRole.allCases) { role in
+                    Text(role.rawValue).tag(role)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Toggle("Brush編集モード", isOn: $isManualRegionEditing)
+            if isManualRegionEditing {
+                Picker("Interaction", selection: $brushInteractionMode) {
+                    Text("Paint").tag(InteractiveSceneKitView.BrushInteractionMode.paint)
+                    Text("Navigate").tag(InteractiveSceneKitView.BrushInteractionMode.navigate)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Picker("Paint", selection: $manualBrushMode) {
+                Text("Add").tag(BrushPaintMode.add)
+                Text("Erase").tag(BrushPaintMode.erase)
+            }
+            .pickerStyle(.segmented)
+
+            sliderRow(label: "Brush Radius [m]", value: manualRadiusBinding, range: 0.001 ... 0.02)
+
+            let preview = activeManualPreview
+            Text("selected samples: \(preview?.selectedCount ?? 0)")
+                .font(.caption)
+            Text("gated blue count: \(preview?.gatedBlueCount ?? 0)")
+                .font(.caption)
+            Text("gated red count: \(preview?.gatedRedCount ?? 0)")
+                .font(.caption)
+
+            Divider().padding(.vertical, 2)
+            Text("比較前サマリ")
+                .font(.caption.bold())
+            Text("Alignment manual region: selected \(alignmentPreview?.selectedCount ?? 0) / gated blue \(alignmentPreview?.gatedBlueCount ?? 0)")
+                .font(.caption2)
+            Text("Comparison manual region: selected \(comparisonPreview?.selectedCount ?? 0) / gated red \(comparisonPreview?.gatedRedCount ?? 0)")
+                .font(.caption2)
+
+            HStack {
+                Button("クリア", role: .destructive) {
+                    clearActiveManualBrush()
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+            }
+        }
+    }
+
     private var fitButtonRow: some View {
         HStack(spacing: 8) {
             Button("Fit Model") { fitToModel() }
@@ -554,7 +637,7 @@ struct DebugInspectorView: View {
             let sourceInput = kind == .new ? appModel.newInput : appModel.usedInput
             guard let sourceInput else { return }
             let shouldFrame = shouldAutoFrameOnNextRefresh
-            let framingScale: Float = (isBrushEditing && shouldFrame) ? 0.72 : 1.0
+            let framingScale: Float = (isEditingAnyBrush && shouldFrame) ? 0.72 : 1.0
             let options = makeInspectorOptions(sourceInput: sourceInput, framingScale: framingScale)
             inspectorScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
@@ -599,7 +682,9 @@ struct DebugInspectorView: View {
             showSampledPoints: showSampledPoints,
             showColorRichPoints: showColorRichPoints,
             showROIBounds: showROIBounds,
-            selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+            selectedBrushPoints: isBrushEditing ? (cropBrushPreview?.selectedPoints ?? []) : [],
+            alignmentRegionPoints: alignmentPreview?.selectedPoints ?? [],
+            comparisonRegionPoints: comparisonPreview?.selectedPoints ?? [],
             recentBrushStamp: latestBrushStamp,
             brushAutoROI: cropBrushPreview?.autoROI,
             pendingROI: pendingROI,
@@ -617,7 +702,9 @@ struct DebugInspectorView: View {
             showSampledPoints: false,
             showColorRichPoints: false,
             showROIBounds: true,
-            selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+            selectedBrushPoints: isBrushEditing ? (cropBrushPreview?.selectedPoints ?? []) : [],
+            alignmentRegionPoints: alignmentPreview?.selectedPoints ?? [],
+            comparisonRegionPoints: comparisonPreview?.selectedPoints ?? [],
             recentBrushStamp: nil,
             brushAutoROI: cropBrushPreview?.autoROI,
             pendingROI: pendingROI,
@@ -690,6 +777,19 @@ struct DebugInspectorView: View {
         cropBrushPreview = appModel.previewCropBrushSelection(kind: kind)
     }
 
+    private func refreshManualRegionPreviews() {
+        alignmentPreview = appModel.previewAlignmentBrush(kind: kind)
+        comparisonPreview = appModel.previewComparisonBrush(kind: kind)
+    }
+
+    private func addActiveBrushStamp(at point: Point3) {
+        if isManualRegionEditing {
+            addManualRegionStamp(at: point)
+        } else {
+            addBrushStamp(at: point)
+        }
+    }
+
     private func addBrushStamp(at point: Point3) {
         var brush = currentInput.cropBrush ?? CropBrushState.default
         brush.radiusMeters = brushRadiusMeters
@@ -705,6 +805,26 @@ struct DebugInspectorView: View {
             }
         }
         refreshCropBrushPreview()
+        refreshManualRegionPreviews()
+        refreshInspectorScene()
+        refreshROIPreviewScene()
+    }
+
+    private func addManualRegionStamp(at point: Point3) {
+        var brush = currentManualBrush ?? ManualRegionBrushState.default
+        brush.radiusMeters = brushRadiusMeters
+        brush.isEnabled = true
+        let stamp = BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: manualBrushMode)
+        brush.stamps.append(stamp)
+        setCurrentManualBrush(brush)
+        latestBrushStamp = stamp
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            if latestBrushStamp?.id == stamp.id {
+                latestBrushStamp = nil
+                refreshInspectorScene()
+            }
+        }
+        refreshManualRegionPreviews()
         refreshInspectorScene()
         refreshROIPreviewScene()
     }
@@ -714,6 +834,7 @@ struct DebugInspectorView: View {
         brush.radiusMeters = radius
         appModel.setCropBrush(kind: kind, brush: brush)
         refreshCropBrushPreview()
+        refreshManualRegionPreviews()
         refreshInspectorScene()
     }
 
@@ -722,7 +843,28 @@ struct DebugInspectorView: View {
         brush.autoROIMarginMeters = margin
         appModel.setCropBrush(kind: kind, brush: brush)
         refreshCropBrushPreview()
+        refreshManualRegionPreviews()
         refreshInspectorScene()
+    }
+
+    private func clearActiveManualBrush() {
+        switch manualRegionRole {
+        case .alignment:
+            appModel.clearAlignmentBrush(kind: kind)
+        case .comparison:
+            appModel.clearComparisonBrush(kind: kind)
+        }
+        refreshManualRegionPreviews()
+        refreshInspectorScene()
+    }
+
+    private func setCurrentManualBrush(_ brush: ManualRegionBrushState?) {
+        switch manualRegionRole {
+        case .alignment:
+            appModel.setAlignmentBrush(kind: kind, brush: brush)
+        case .comparison:
+            appModel.setComparisonBrush(kind: kind, brush: brush)
+        }
     }
 
     private func normalize(_ value: Float, sourceMin: Float, sourceMax: Float) -> Float {
@@ -733,6 +875,43 @@ struct DebugInspectorView: View {
 
     private func denormalize(_ value: Float, sourceMin: Float, sourceMax: Float) -> Float {
         sourceMin + (sourceMax - sourceMin) * min(1, max(0, value))
+    }
+
+    private var isEditingAnyBrush: Bool {
+        isBrushEditing || isManualRegionEditing
+    }
+
+    private var activeManualPreview: ManualRegionPreview? {
+        switch manualRegionRole {
+        case .alignment:
+            return alignmentPreview
+        case .comparison:
+            return comparisonPreview
+        }
+    }
+
+    private var currentManualBrush: ManualRegionBrushState? {
+        switch manualRegionRole {
+        case .alignment:
+            return currentInput.alignmentBrush
+        case .comparison:
+            return currentInput.comparisonBrush
+        }
+    }
+
+    private var manualRadiusBinding: Binding<Float> {
+        Binding(
+            get: { currentManualBrush?.radiusMeters ?? brushRadiusMeters },
+            set: { newValue in
+                brushRadiusMeters = newValue
+                var brush = currentManualBrush ?? ManualRegionBrushState.default
+                brush.radiusMeters = newValue
+                brush.isEnabled = true
+                setCurrentManualBrush(brush)
+                refreshManualRegionPreviews()
+                refreshInspectorScene()
+            }
+        )
     }
 
     private var currentInput: ModelInput {
@@ -806,6 +985,9 @@ struct DebugInspectorView: View {
     }
 
     private func preferredBrushStartBounds(from input: ModelInput) -> SpatialBounds3D? {
+        if let manualBounds = activeManualPreviewBounds {
+            return manualBounds
+        }
         if let autoROI = cropBrushPreview?.autoROI {
             return autoROI
         }
@@ -816,6 +998,10 @@ struct DebugInspectorView: View {
             return inputROI
         }
         return input.package.sourceBounds
+    }
+
+    private var activeManualPreviewBounds: SpatialBounds3D? {
+        SpatialBounds3D(points: (activeManualPreview?.selectedPoints ?? []).map(\.simd))
     }
 
     private func focusBounds(for input: ModelInput) -> SpatialBounds3D? {

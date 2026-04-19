@@ -63,7 +63,15 @@ final class AppModel: ObservableObject {
                 try USDZLoader.inspect(url: localURL, config: config, roi: nil)
             }.value
 
-            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, cropBrush: nil, package: package)
+            let input = ModelInput(
+                kind: kind,
+                fileURL: localURL,
+                roi: nil,
+                cropBrush: nil,
+                alignmentBrush: nil,
+                comparisonBrush: nil,
+                package: package
+            )
 
             switch kind {
             case .new:
@@ -106,9 +114,39 @@ final class AppModel: ObservableObject {
         setCropBrush(kind: kind, brush: nil)
     }
 
+    func setAlignmentBrush(kind: ModelKind, brush: ManualRegionBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.alignmentBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func setComparisonBrush(kind: ModelKind, brush: ManualRegionBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.comparisonBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func clearAlignmentBrush(kind: ModelKind) {
+        setAlignmentBrush(kind: kind, brush: nil)
+    }
+
+    func clearComparisonBrush(kind: ModelKind) {
+        setComparisonBrush(kind: kind, brush: nil)
+    }
+
     func previewCropBrushSelection(kind: ModelKind) -> CropBrushPreview? {
         guard let input = modelInput(for: kind), let brush = input.cropBrush else { return nil }
         return CropBrushEngine.makePreview(samples: input.package.cachedSamples, brush: brush)
+    }
+
+    func previewAlignmentBrush(kind: ModelKind) -> ManualRegionPreview? {
+        guard let input = modelInput(for: kind), let brush = input.alignmentBrush else { return nil }
+        return CropBrushEngine.makeManualRegionPreview(samples: input.package.cachedSamples, package: input.package, brush: brush)
+    }
+
+    func previewComparisonBrush(kind: ModelKind) -> ManualRegionPreview? {
+        guard let input = modelInput(for: kind), let brush = input.comparisonBrush else { return nil }
+        return CropBrushEngine.makeManualRegionPreview(samples: input.package.cachedSamples, package: input.package, brush: brush)
     }
 
     func applyCropBrushAsROI(kind: ModelKind, reason: String = "Crop Brushを適用") async -> ROIReinspectDelta? {
@@ -182,8 +220,9 @@ final class AppModel: ObservableObject {
 
         do {
             let config = self.config
-            let newPackage = newInput.package
-            let usedPackage = usedInput.package
+            let effectivePackages = try buildEffectivePackagesForComparison(newInput: newInput, usedInput: usedInput, config: config)
+            let newPackage = effectivePackages.newPackage
+            let usedPackage = effectivePackages.usedPackage
             let newURL = newInput.fileURL
             let usedURL = usedInput.fileURL
 
@@ -204,6 +243,88 @@ final class AppModel: ObservableObject {
         }
 
         isBusy = false
+    }
+
+    private func buildEffectivePackagesForComparison(newInput: ModelInput,
+                                                     usedInput: ModelInput,
+                                                     config: AnalysisConfig) throws -> (newPackage: LoadedModelPackage, usedPackage: LoadedModelPackage) {
+        let newAlignment = gatePointsIfNeeded(role: .alignment, input: newInput)
+        let usedAlignment = gatePointsIfNeeded(role: .alignment, input: usedInput)
+        let newComparison = gatePointsIfNeeded(role: .comparison, input: newInput)
+        let usedComparison = gatePointsIfNeeded(role: .comparison, input: usedInput)
+
+        let alignmentMismatch = (newAlignment != nil) != (usedAlignment != nil)
+        if alignmentMismatch {
+            throw PoCError.profileFailed("Alignment Region は新品/走行品の両方に設定してください。片側のみでは実行できません。")
+        }
+        let comparisonMismatch = (newComparison != nil) != (usedComparison != nil)
+        if comparisonMismatch {
+            throw PoCError.profileFailed("Comparison Region は新品/走行品の両方に設定してください。片側のみでは実行できません。")
+        }
+
+        let newBlue = newAlignment ?? newInput.package.bluePoints
+        let usedBlue = usedAlignment ?? usedInput.package.bluePoints
+        let newRed = newComparison ?? newInput.package.redPoints
+        let usedRed = usedComparison ?? usedInput.package.redPoints
+
+        if newBlue.count < config.minimumMaskPoints || usedBlue.count < config.minimumMaskPoints {
+            throw PoCError.alignmentFailed("Alignment Region 適用後の青点が不足しました。最低 \(config.minimumMaskPoints) 点が必要です。new=\(newBlue.count), used=\(usedBlue.count)")
+        }
+        if newRed.count < config.minimumMaskPoints || usedRed.count < config.minimumMaskPoints {
+            throw PoCError.profileFailed("Comparison Region 適用後の赤点が不足しました。最低 \(config.minimumMaskPoints) 点が必要です。new=\(newRed.count), used=\(usedRed.count)")
+        }
+
+        let newPackage = withPoints(base: newInput.package, bluePoints: newBlue, redPoints: newRed)
+        let usedPackage = withPoints(base: usedInput.package, bluePoints: usedBlue, redPoints: usedRed)
+        return (newPackage, usedPackage)
+    }
+
+    private func gatePointsIfNeeded(role: ManualRegionRole, input: ModelInput) -> [Point3]? {
+        let brush: ManualRegionBrushState?
+        switch role {
+        case .alignment:
+            brush = input.alignmentBrush
+        case .comparison:
+            brush = input.comparisonBrush
+        }
+        guard let brush, brush.isEnabled, !brush.stamps.isEmpty else {
+            return nil
+        }
+        let selected = CropBrushEngine.selectedSamples(from: input.package.cachedSamples, manualBrush: brush)
+        switch role {
+        case .alignment:
+            return CropBrushEngine.gate(maskPoints: input.package.bluePoints, selectedSamples: selected)
+        case .comparison:
+            return CropBrushEngine.gate(maskPoints: input.package.redPoints, selectedSamples: selected)
+        }
+    }
+
+    private func withPoints(base: LoadedModelPackage, bluePoints: [Point3], redPoints: [Point3]) -> LoadedModelPackage {
+        LoadedModelPackage(
+            displayName: base.displayName,
+            bluePoints: bluePoints,
+            redPoints: redPoints,
+            geometryNodeCount: base.geometryNodeCount,
+            totalSamples: base.totalSamples,
+            rawBlueCount: base.rawBlueCount,
+            rawRedCount: base.rawRedCount,
+            skippedNoUVTriangles: base.skippedNoUVTriangles,
+            materialRecords: base.materialRecords,
+            modelIOMaterialRecords: base.modelIOMaterialRecords,
+            cachedSamples: base.cachedSamples,
+            sourceBounds: base.sourceBounds,
+            meanR: base.meanR,
+            meanG: base.meanG,
+            meanB: base.meanB,
+            meanHue: base.meanHue,
+            meanSaturation: base.meanSaturation,
+            meanValue: base.meanValue,
+            minSaturationObserved: base.minSaturationObserved,
+            maxSaturationObserved: base.maxSaturationObserved,
+            minValueObserved: base.minValueObserved,
+            maxValueObserved: base.maxValueObserved,
+            warnings: base.warnings
+        )
     }
 
     func exportCSV() {
