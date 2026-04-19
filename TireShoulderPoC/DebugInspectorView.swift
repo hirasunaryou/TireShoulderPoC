@@ -11,6 +11,12 @@ struct DebugInspectorView: View {
     @State private var sceneError: String?
     @State private var showBluePoints = true
     @State private var showRedPoints = true
+    @State private var roiXMinNorm: Float = 0
+    @State private var roiXMaxNorm: Float = 1
+    @State private var roiYMinNorm: Float = 0
+    @State private var roiYMaxNorm: Float = 1
+    @State private var roiZMinNorm: Float = 0
+    @State private var roiZMaxNorm: Float = 1
 
     var body: some View {
         GroupBox("\(kind.rawValue) Debug Inspector") {
@@ -51,6 +57,7 @@ struct DebugInspectorView: View {
                 }
 
                 thresholdEditor
+                roiEditorSection
 
                 HStack {
                     Button("キャッシュから再抽出") {
@@ -66,8 +73,12 @@ struct DebugInspectorView: View {
             }
         }
         .onAppear { refreshInspectorScene() }
+        .onAppear { syncROIEditorFromModel() }
         .onChange(of: showBluePoints) { _, _ in refreshInspectorScene() }
         .onChange(of: showRedPoints) { _, _ in refreshInspectorScene() }
+        .onChange(of: roiEditorSyncKey) { _, _ in
+            syncROIEditorFromModel()
+        }
     }
 
     private var thresholdEditor: some View {
@@ -130,6 +141,196 @@ struct DebugInspectorView: View {
                 .font(.caption)
             Slider(value: value, in: range)
         }
+    }
+
+    private var roiEditorSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ROI (AABB) Editor")
+                .font(.subheadline.bold())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("sourceBounds:")
+                    .font(.caption.bold())
+                Text(boundsDescription(input.package.sourceBounds))
+                    .font(.caption.monospaced())
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("current ROI:")
+                    .font(.caption.bold())
+                Text(input.roi.map(boundsDescription) ?? "nil (全領域)")
+                    .font(.caption.monospaced())
+            }
+
+            axisSliderRows(axisLabel: "X", minValue: xMinBinding, maxValue: xMaxBinding)
+            axisSliderRows(axisLabel: "Y", minValue: yMinBinding, maxValue: yMaxBinding)
+            axisSliderRows(axisLabel: "Z", minValue: zMinBinding, maxValue: zMaxBinding)
+
+            HStack {
+                Button("ROI適用") {
+                    appModel.updateROI(kind: kind, roi: roiFromNormalizedEditor())
+                    Task {
+                        await appModel.reinspectModel(kind: kind)
+                        refreshInspectorScene()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(appModel.isBusy)
+
+                Button("ROI解除") {
+                    appModel.updateROI(kind: kind, roi: nil)
+                    syncROIEditorFromModel()
+                    Task {
+                        await appModel.reinspectModel(kind: kind)
+                        refreshInspectorScene()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(appModel.isBusy)
+            }
+        }
+    }
+
+    private func axisSliderRows(axisLabel: String, minValue: Binding<Float>, maxValue: Binding<Float>) -> some View {
+        let sourceBounds = input.package.sourceBounds
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("\(axisLabel) min/max (normalized 0...1)")
+                .font(.caption.bold())
+            Slider(value: minValue, in: 0 ... 1)
+            Slider(value: maxValue, in: 0 ... 1)
+            Text(
+                "\(axisLabel): n[\(minValue.wrappedValue, specifier: "%.3f"), \(maxValue.wrappedValue, specifier: "%.3f")] " +
+                "→ w[\(actualCoordinate(for: axisLabel, normalized: minValue.wrappedValue, sourceBounds: sourceBounds), specifier: "%.4f"), " +
+                "\(actualCoordinate(for: axisLabel, normalized: maxValue.wrappedValue, sourceBounds: sourceBounds), specifier: "%.4f")]"
+            )
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var xMinBinding: Binding<Float> {
+        Binding(
+            get: { roiXMinNorm },
+            set: { newValue in
+                roiXMinNorm = min(newValue, roiXMaxNorm)
+            }
+        )
+    }
+
+    private var xMaxBinding: Binding<Float> {
+        Binding(
+            get: { roiXMaxNorm },
+            set: { newValue in
+                roiXMaxNorm = max(newValue, roiXMinNorm)
+            }
+        )
+    }
+
+    private var yMinBinding: Binding<Float> {
+        Binding(
+            get: { roiYMinNorm },
+            set: { newValue in
+                roiYMinNorm = min(newValue, roiYMaxNorm)
+            }
+        )
+    }
+
+    private var yMaxBinding: Binding<Float> {
+        Binding(
+            get: { roiYMaxNorm },
+            set: { newValue in
+                roiYMaxNorm = max(newValue, roiYMinNorm)
+            }
+        )
+    }
+
+    private var zMinBinding: Binding<Float> {
+        Binding(
+            get: { roiZMinNorm },
+            set: { newValue in
+                roiZMinNorm = min(newValue, roiZMaxNorm)
+            }
+        )
+    }
+
+    private var zMaxBinding: Binding<Float> {
+        Binding(
+            get: { roiZMaxNorm },
+            set: { newValue in
+                roiZMaxNorm = max(newValue, roiZMinNorm)
+            }
+        )
+    }
+
+    /// 現在のモデル入力の `sourceBounds + roi` から、UI編集値へ同期するためのキー。
+    private var roiEditorSyncKey: String {
+        let s = input.package.sourceBounds
+        let r = input.roi
+        return [
+            s.min.x, s.min.y, s.min.z,
+            s.max.x, s.max.y, s.max.z,
+            r?.min.x, r?.min.y, r?.min.z,
+            r?.max.x, r?.max.y, r?.max.z
+        ]
+        .map { value in
+            guard let value else { return "nil" }
+            return String(format: "%.6f", value)
+        }
+        .joined(separator: "|")
+    }
+
+    private func syncROIEditorFromModel() {
+        let source = input.package.sourceBounds
+        let roi = input.roi ?? source
+        roiXMinNorm = normalizedCoordinate(roi.min.x, min: source.min.x, max: source.max.x)
+        roiXMaxNorm = normalizedCoordinate(roi.max.x, min: source.min.x, max: source.max.x)
+        roiYMinNorm = normalizedCoordinate(roi.min.y, min: source.min.y, max: source.max.y)
+        roiYMaxNorm = normalizedCoordinate(roi.max.y, min: source.min.y, max: source.max.y)
+        roiZMinNorm = normalizedCoordinate(roi.min.z, min: source.min.z, max: source.max.z)
+        roiZMaxNorm = normalizedCoordinate(roi.max.z, min: source.min.z, max: source.max.z)
+    }
+
+    private func roiFromNormalizedEditor() -> SpatialBounds3D {
+        let s = input.package.sourceBounds
+        return SpatialBounds3D(
+            min: Point3(
+                x: actualCoordinate(for: "X", normalized: roiXMinNorm, sourceBounds: s),
+                y: actualCoordinate(for: "Y", normalized: roiYMinNorm, sourceBounds: s),
+                z: actualCoordinate(for: "Z", normalized: roiZMinNorm, sourceBounds: s)
+            ),
+            max: Point3(
+                x: actualCoordinate(for: "X", normalized: roiXMaxNorm, sourceBounds: s),
+                y: actualCoordinate(for: "Y", normalized: roiYMaxNorm, sourceBounds: s),
+                z: actualCoordinate(for: "Z", normalized: roiZMaxNorm, sourceBounds: s)
+            )
+        )
+    }
+
+    private func normalizedCoordinate(_ value: Float, min: Float, max: Float) -> Float {
+        let span = max - min
+        guard abs(span) > .ulpOfOne else { return 0 }
+        return ((value - min) / span).clamped(to: 0 ... 1)
+    }
+
+    private func actualCoordinate(for axisLabel: String, normalized: Float, sourceBounds: SpatialBounds3D) -> Float {
+        switch axisLabel {
+        case "X":
+            return denormalize(normalized: normalized, min: sourceBounds.min.x, max: sourceBounds.max.x)
+        case "Y":
+            return denormalize(normalized: normalized, min: sourceBounds.min.y, max: sourceBounds.max.y)
+        default:
+            return denormalize(normalized: normalized, min: sourceBounds.min.z, max: sourceBounds.max.z)
+        }
+    }
+
+    private func denormalize(normalized: Float, min: Float, max: Float) -> Float {
+        min + (max - min) * normalized
+    }
+
+    private func boundsDescription(_ bounds: SpatialBounds3D) -> String {
+        let minText = "min(\(bounds.min.x, specifier: "%.4f"), \(bounds.min.y, specifier: "%.4f"), \(bounds.min.z, specifier: "%.4f"))"
+        let maxText = "max(\(bounds.max.x, specifier: "%.4f"), \(bounds.max.y, specifier: "%.4f"), \(bounds.max.z, specifier: "%.4f"))"
+        return "\(minText), \(maxText)"
     }
 
     private func refreshInspectorScene() {
