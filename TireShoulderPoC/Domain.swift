@@ -33,6 +33,15 @@ enum InspectorFocusMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum InspectorCameraFitTarget: String, CaseIterable, Identifiable {
+    case model = "Fit Model"
+    case roi = "Fit ROI"
+    case brush = "Fit Brush"
+    case reset = "Reset View"
+
+    var id: String { rawValue }
+}
+
 struct Point3: Hashable, Sendable {
     var x: Float
     var y: Float

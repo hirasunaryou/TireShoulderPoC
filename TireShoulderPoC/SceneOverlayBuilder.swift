@@ -53,7 +53,11 @@ enum SceneOverlayBuilder {
                                    selectedBrushPoints: [Point3] = [],
                                    brushAutoROI: SpatialBounds3D? = nil,
                                    pendingROI: SpatialBounds3D? = nil,
-                                   appliedROI: SpatialBounds3D? = nil) throws -> SCNScene {
+                                   appliedROI: SpatialBounds3D? = nil,
+                                   lastBrushStamp: BrushStamp3D? = nil,
+                                   cameraTransform: simd_float4x4? = nil,
+                                   cameraFitTarget: InspectorCameraFitTarget? = nil,
+                                   framingDistanceScale: Float = 1.0) throws -> SCNScene {
         let rawScene: SCNScene
         do {
             rawScene = try SCNScene(url: modelURL, options: nil)
@@ -151,8 +155,14 @@ enum SceneOverlayBuilder {
                 pointCloudNode(
                     points: selectedBrushPoints.map(\.simd),
                     color: .cyan,
-                    pointRadius: 0.00075
+                    pointRadius: 0.0011
                 )
+            )
+        }
+
+        if let lastBrushStamp {
+            scene.rootNode.addChildNode(
+                highlightBrushStampNode(center: lastBrushStamp.center.simd, radius: lastBrushStamp.radiusMeters)
             )
         }
 
@@ -174,16 +184,22 @@ enum SceneOverlayBuilder {
             focusMode: focusMode,
             package: package,
             pendingROI: pendingROI,
-            appliedROI: appliedROI
+            appliedROI: appliedROI,
+            selectedBrushPoints: selectedBrushPoints,
+            brushAutoROI: brushAutoROI,
+            cameraFitTarget: cameraFitTarget
         ) ?? pendingROI ?? appliedROI ?? package.sourceBounds
-        let framingBounds = focusBounds
-        let cameraNode = makeFramingCamera(bounds: framingBounds)
+        let cameraNode = makeFramingCamera(bounds: focusBounds, distanceScale: framingDistanceScale)
         cameraNode.name = "InspectorCamera"
+        if let cameraTransform {
+            // stamp追加などでsceneを再構築しても視点維持を優先する。
+            cameraNode.simdTransform = cameraTransform
+        }
         scene.rootNode.addChildNode(cameraNode)
         return scene
     }
 
-    static func makeFramingCamera(bounds: SpatialBounds3D) -> SCNNode {
+    static func makeFramingCamera(bounds: SpatialBounds3D, distanceScale: Float = 1.0) -> SCNNode {
         let camera = SCNCamera()
         camera.zNear = 0.0001
         camera.zFar = 200
@@ -200,7 +216,7 @@ enum SceneOverlayBuilder {
             bounds.max.z - bounds.min.z
         )
         let radius = max(max(size.x, size.y), max(size.z, 0.0005))
-        let distance = radius * 2.4
+        let distance = radius * 2.4 * max(0.35, distanceScale)
         let position = SIMD3<Float>(
             center.x + distance * 0.85,
             center.y + distance * 0.65,
@@ -314,7 +330,25 @@ enum SceneOverlayBuilder {
     private static func makeFocusBounds(focusMode: InspectorFocusMode,
                                         package: LoadedModelPackage,
                                         pendingROI: SpatialBounds3D?,
-                                        appliedROI: SpatialBounds3D?) -> SpatialBounds3D? {
+                                        appliedROI: SpatialBounds3D?,
+                                        selectedBrushPoints: [Point3],
+                                        brushAutoROI: SpatialBounds3D?,
+                                        cameraFitTarget: InspectorCameraFitTarget?) -> SpatialBounds3D? {
+        if let cameraFitTarget {
+            switch cameraFitTarget {
+            case .model, .reset:
+                return package.sourceBounds
+            case .roi:
+                return pendingROI ?? appliedROI ?? package.sourceBounds
+            case .brush:
+                return SpatialBounds3D(points: selectedBrushPoints.map(\.simd))
+                    ?? brushAutoROI
+                    ?? pendingROI
+                    ?? appliedROI
+                    ?? package.sourceBounds
+            }
+        }
+
         switch focusMode {
         case .model:
             return package.sourceBounds
@@ -327,6 +361,30 @@ enum SceneOverlayBuilder {
         case .red:
             return SpatialBounds3D(points: package.redPoints.map(\.simd))
         }
+    }
+
+    private static func highlightBrushStampNode(center: SIMD3<Float>, radius: Float) -> SCNNode {
+        let root = SCNNode()
+
+        let hitSphere = SCNSphere(radius: CGFloat(max(radius * 0.36, 0.0016)))
+        hitSphere.segmentCount = 10
+        hitSphere.firstMaterial?.diffuse.contents = UIColor.systemMint
+        hitSphere.firstMaterial?.lightingModel = .constant
+        hitSphere.firstMaterial?.transparency = 0.95
+        let hitNode = SCNNode(geometry: hitSphere)
+        hitNode.simdPosition = center
+        root.addChildNode(hitNode)
+
+        let guideSphere = SCNSphere(radius: CGFloat(max(radius, 0.0012)))
+        guideSphere.segmentCount = 16
+        guideSphere.firstMaterial?.fillMode = .lines
+        guideSphere.firstMaterial?.diffuse.contents = UIColor.systemTeal.withAlphaComponent(0.85)
+        guideSphere.firstMaterial?.lightingModel = .constant
+        let guideNode = SCNNode(geometry: guideSphere)
+        guideNode.simdPosition = center
+        root.addChildNode(guideNode)
+
+        return root
     }
 
     private static func cloneChildren(from root: SCNNode, to destination: SCNNode) {
