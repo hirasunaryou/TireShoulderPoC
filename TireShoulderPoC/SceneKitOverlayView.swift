@@ -6,6 +6,9 @@ struct SceneKitOverlayView: View {
     var pointOfView: SCNNode? = nil
     var isBrushEditing = false
     var minStampDistance: Float = 0.002
+    var cameraTransform: simd_float4x4? = nil
+    var onCameraTransformChange: ((simd_float4x4) -> Void)? = nil
+    var onDoubleTap: (() -> Void)? = nil
     var onSurfaceHit: ((Point3) -> Void)? = nil
 
     var body: some View {
@@ -16,6 +19,9 @@ struct SceneKitOverlayView: View {
                     pointOfView: pointOfView,
                     isBrushEditing: isBrushEditing,
                     minStampDistance: minStampDistance,
+                    cameraTransform: cameraTransform,
+                    onCameraTransformChange: onCameraTransformChange,
+                    onDoubleTap: onDoubleTap,
                     onSurfaceHit: onSurfaceHit
                 )
             } else {
