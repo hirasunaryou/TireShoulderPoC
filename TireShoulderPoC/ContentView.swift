@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var activeImportKind: ModelKind?
     @State private var isImporterPresented = false
     @State private var nearColorRichRadiusMeters = Double(USDZLoader.nearColorRichRadiusMeters)
+    @State private var extractionMode = USDZLoader.extractionMode
 
     private var usdzType: UTType {
         UTType(filenameExtension: "usdz") ?? .data
@@ -183,15 +184,36 @@ struct ContentView: View {
     }
 
     private var nearColorRichFilterSection: some View {
-        GroupBox("Debug: Near Color-Rich Filter") {
+        GroupBox("Debug: Mask Extraction") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Near Color-Rich Radius (meters): \(nearColorRichRadiusMeters, specifier: "%.3f")")
-                    .font(.caption)
-                Slider(value: $nearColorRichRadiusMeters, in: 0.002 ... 0.03)
-                    .onChange(of: nearColorRichRadiusMeters) { _, newValue in
-                        USDZLoader.nearColorRichRadiusMeters = Float(newValue)
-                        reextractLoadedMasksFromCache()
+                Picker("Extraction Mode", selection: $extractionMode) {
+                    ForEach(USDZLoader.ExtractionMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
                     }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: extractionMode) { _, newMode in
+                    USDZLoader.extractionMode = newMode
+                    reextractLoadedMasksFromCache()
+                }
+
+                if extractionMode == .nearColorRich {
+                    Text("Near Color-Rich Radius (meters): \(nearColorRichRadiusMeters, specifier: "%.3f")")
+                        .font(.caption)
+                    Slider(value: $nearColorRichRadiusMeters, in: 0.002 ... 0.03)
+                        .onChange(of: nearColorRichRadiusMeters) { _, newValue in
+                            USDZLoader.nearColorRichRadiusMeters = Float(newValue)
+                            reextractLoadedMasksFromCache()
+                        }
+                }
+
+                let debugCounts = USDZLoader.lastExtractionDebugCounts
+                Text("candidateCount: \(debugCounts.candidateCount)")
+                    .font(.caption)
+                Text("blueCount: \(debugCounts.blueCount)")
+                    .font(.caption)
+                Text("redCount: \(debugCounts.redCount)")
+                    .font(.caption)
 
                 Button("キャッシュから再抽出") {
                     reextractLoadedMasksFromCache()

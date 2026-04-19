@@ -185,6 +185,20 @@ enum USDZLoader {
     private static let maxCachedSamples = 12_000
     static var nearColorRichRadiusMeters: Float = 0.01
 
+    enum ExtractionMode: String, CaseIterable {
+        case simpleThreshold = "Simple Threshold"
+        case nearColorRich = "Near Color-Rich"
+    }
+
+    struct ExtractionDebugCounts {
+        let candidateCount: Int
+        let blueCount: Int
+        let redCount: Int
+    }
+
+    static var extractionMode: ExtractionMode = .nearColorRich
+    static var lastExtractionDebugCounts = ExtractionDebugCounts(candidateCount: 0, blueCount: 0, redCount: 0)
+
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
 
@@ -333,15 +347,17 @@ enum USDZLoader {
         }
 
         let colorRichSamples = cachedSamples.filter { $0.hsv.saturation >= 0.05 }
-        let classifiedPoints = classifyNearColorRichSamples(cachedSamples, config: config)
+        let classifiedPoints = classifySamples(cachedSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
+        let debugCounts = classifiedPoints.debugCounts
         let rawBlueCount = bluePoints.count
         let rawRedCount = redPoints.count
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
         var warnings: [String] = []
+        warnings.append("抽出モード=\(extractionMode.rawValue), candidate=\(debugCounts.candidateCount), blue=\(debugCounts.blueCount), red=\(debugCounts.redCount)")
         if reducedBlue.count < config.minimumMaskPoints {
             warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(rawBlueCount), min=\(config.minimumMaskPoints)")
         }
@@ -382,14 +398,16 @@ enum USDZLoader {
     }
 
     static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
-        let classifiedPoints = classifyNearColorRichSamples(package.cachedSamples, config: config)
+        let classifiedPoints = classifySamples(package.cachedSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
+        let debugCounts = classifiedPoints.debugCounts
 
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
-        var warnings = package.warnings.filter { !$0.contains("マスク不足") }
+        var warnings = package.warnings.filter { !$0.contains("マスク不足") && !$0.contains("抽出モード=") }
+        warnings.append("抽出モード=\(extractionMode.rawValue), candidate=\(debugCounts.candidateCount), blue=\(debugCounts.blueCount), red=\(debugCounts.redCount)")
         if reducedBlue.count < config.minimumMaskPoints {
             warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(bluePoints.count), min=\(config.minimumMaskPoints)")
         }
@@ -670,10 +688,49 @@ enum USDZLoader {
         }
     }
 
+    private static func classifySamples(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], debugCounts: ExtractionDebugCounts) {
+        switch extractionMode {
+        case .simpleThreshold:
+            return classifySimpleThresholdSamples(samples, config: config)
+        case .nearColorRich:
+            return classifyNearColorRichSamples(samples, config: config)
+        }
+    }
+
+    private static func classifySimpleThresholdSamples(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], debugCounts: ExtractionDebugCounts) {
+        var bluePoints: [SIMD3<Float>] = []
+        var redPoints: [SIMD3<Float>] = []
+
+        for sample in samples {
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                bluePoints.append(sample.worldPosition.simd)
+            case .red:
+                redPoints.append(sample.worldPosition.simd)
+            case .other:
+                break
+            }
+        }
+
+        let debugCounts = ExtractionDebugCounts(
+            candidateCount: samples.count,
+            blueCount: bluePoints.count,
+            redCount: redPoints.count
+        )
+        lastExtractionDebugCounts = debugCounts
+        return (bluePoints, redPoints, debugCounts)
+    }
+
     private static func classifyNearColorRichSamples(
         _ samples: [CachedCentroidSample],
         config: AnalysisConfig
-    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>]) {
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], debugCounts: ExtractionDebugCounts) {
         let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
         let diagnostics = nearColorRichDiagnostics(samples, colorRichSamples: colorRichSamples, config: config)
         var bluePoints: [SIMD3<Float>] = []
@@ -693,7 +750,13 @@ enum USDZLoader {
             }
         }
 
-        return (bluePoints, redPoints)
+        let debugCounts = ExtractionDebugCounts(
+            candidateCount: diagnostics.candidateNearColorRichCount,
+            blueCount: diagnostics.blueRuleCount,
+            redCount: diagnostics.redRuleCount
+        )
+        lastExtractionDebugCounts = debugCounts
+        return (bluePoints, redPoints, debugCounts)
     }
 
     private static func nearColorRichDiagnostics(
