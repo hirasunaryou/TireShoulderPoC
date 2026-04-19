@@ -99,6 +99,15 @@ struct DebugInspectorView: View {
 
     /// レンダーモードやROI適用状態に追随する再描画イベントを分離。
     private func bindROILifecycle<Content: View>(_ content: Content) -> some View {
+        bindROISliderLifecycle(
+            bindBrushLifecycle(
+                bindInspectorModeLifecycle(content)
+            )
+        )
+    }
+
+    /// 型推論の負荷を下げるため、onChange 群を小さな責務単位に分割する。
+    private func bindInspectorModeLifecycle<Content: View>(_ content: Content) -> some View {
         content
             .onChange(of: renderMode) { _, newMode in
                 applyRenderModeDefaults(newMode)
@@ -121,6 +130,11 @@ struct DebugInspectorView: View {
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
+    }
+
+    /// Brush 関連の状態変更ハンドリングを独立させる。
+    private func bindBrushLifecycle<Content: View>(_ content: Content) -> some View {
+        content
             .onChange(of: isBrushEditing) { _, isEditing in
                 if isEditing {
                     brushInteractionMode = .paint
@@ -149,6 +163,11 @@ struct DebugInspectorView: View {
                 syncManualRegionBrushControlsFromCurrentInput()
                 refreshInspectorScene()
             }
+    }
+
+    /// ROI スライダー変更イベントのみを分離し、巨大式の型推論失敗を回避する。
+    private func bindROISliderLifecycle<Content: View>(_ content: Content) -> some View {
+        content
             .onChange(of: roiNormMinX) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMaxX) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMinY) { _, _ in handleROISliderChanged() }
