@@ -22,9 +22,14 @@ struct DebugInspectorView: View {
     @State private var autoApplyTask: Task<Void, Never>?
     @State private var isBrushEditing = false
     @State private var brushMode: BrushPaintMode = .add
+    @State private var brushInteractionMode: BrushInteractionMode = .paint
     @State private var brushRadiusMeters: Float = CropBrushState.default.radiusMeters
     @State private var brushAutoROIMarginMeters: Float = CropBrushState.default.autoROIMarginMeters
     @State private var cropBrushPreview: CropBrushPreview?
+    @State private var inspectorCameraTransform: simd_float4x4?
+    @State private var resetViewToken: Int = 0
+    @State private var recentBrushStamp: Point3?
+    @State private var recentStampTask: Task<Void, Never>?
 
     // ROI編集用の正規化値(0...1)。
     @State private var roiNormMinX: Float = 0
@@ -80,6 +85,8 @@ struct DebugInspectorView: View {
             .onDisappear {
                 autoApplyTask?.cancel()
                 autoApplyTask = nil
+                recentStampTask?.cancel()
+                recentStampTask = nil
             }
     }
 
@@ -104,6 +111,11 @@ struct DebugInspectorView: View {
                 refreshROIPreviewScene()
             }
             .onChange(of: isBrushEditing) { _, _ in refreshInspectorScene() }
+            .onChange(of: isBrushEditing) { _, isOn in
+                if isOn {
+                    frameCameraForBrushEditingEntry()
+                }
+            }
             .onChange(of: brushMode) { _, _ in refreshInspectorScene() }
             .onChange(of: brushRadiusMeters) { _, newValue in
                 updateCropBrushRadius(newValue)
@@ -135,13 +147,23 @@ struct DebugInspectorView: View {
             if let inspectorScene {
                 SceneKitOverlayView(
                     scene: inspectorScene,
-                    isBrushEditing: isBrushEditing,
+                    pointOfView: currentCameraPointOfView,
+                    isBrushEditing: isPaintModeEnabled,
                     minStampDistance: max(brushRadiusMeters * 0.55, 0.0008),
-                    onSurfaceHit: isBrushEditing ? { point in
-                        addBrushStamp(at: point)
-                    } : nil
+                    onSurfaceHit: isPaintModeEnabled ? { point in addBrushStamp(at: point) } : nil,
+                    onCameraTransformChanged: { transform in
+                        inspectorCameraTransform = transform
+                    },
+                    resetViewToken: resetViewToken,
+                    showBrushGuide: isBrushEditing
                 )
-                    .frame(height: 280)
+                    .frame(height: 390)
+                    .overlay(alignment: .topLeading) {
+                        if isBrushEditing {
+                            brushOperationGuide
+                                .padding(10)
+                        }
+                    }
             } else if let sceneError {
                 Text(sceneError)
                     .foregroundStyle(.red)
@@ -339,6 +361,12 @@ struct DebugInspectorView: View {
                 .font(.subheadline.bold())
 
             Toggle("Brush編集モード", isOn: $isBrushEditing)
+            Picker("Interaction", selection: $brushInteractionMode) {
+                Text("Paint").tag(BrushInteractionMode.paint)
+                Text("Navigate").tag(BrushInteractionMode.navigate)
+            }
+            .pickerStyle(.segmented)
+            .disabled(!isBrushEditing)
             Picker("Paint", selection: $brushMode) {
                 Text("Add").tag(BrushPaintMode.add)
                 Text("Erase").tag(BrushPaintMode.erase)
@@ -382,6 +410,19 @@ struct DebugInspectorView: View {
                     refreshInspectorScene()
                 }
                 .buttonStyle(.bordered)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Quick Focus")
+                    .font(.caption.bold())
+                HStack {
+                    Button("Fit Model") { fitModel() }
+                    Button("Fit ROI") { fitROI() }
+                    Button("Fit Brush") { fitBrush() }
+                    Button("Reset View") { resetView() }
+                }
+                .buttonStyle(.bordered)
+                .font(.caption)
             }
         }
     }
@@ -502,6 +543,7 @@ struct DebugInspectorView: View {
                 showROIBounds: showROIBounds,
                 focusMode: focusMode,
                 selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+                recentBrushPoint: recentBrushStamp,
                 brushAutoROI: cropBrushPreview?.autoROI,
                 pendingROI: pendingROI,
                 appliedROI: sourceInput.roi
@@ -611,6 +653,15 @@ struct DebugInspectorView: View {
             BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: brushMode)
         )
         appModel.setCropBrush(kind: kind, brush: brush)
+        recentBrushStamp = point
+        recentStampTask?.cancel()
+        recentStampTask = Task {
+            try? await Task.sleep(nanoseconds: 850_000_000)
+            await MainActor.run {
+                recentBrushStamp = nil
+                refreshInspectorScene()
+            }
+        }
         refreshCropBrushPreview()
         refreshInspectorScene()
         refreshROIPreviewScene()
@@ -688,4 +739,70 @@ struct DebugInspectorView: View {
             showRedPoints = true
         }
     }
+
+    private var isPaintModeEnabled: Bool {
+        isBrushEditing && brushInteractionMode == .paint
+    }
+
+    private var brushOperationGuide: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("1本指: 塗る")
+            Text("2本指: 視点移動")
+            Text("Pinch: 拡大縮小")
+            Text("Double Tap: Reset")
+        }
+        .font(.caption2)
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var currentCameraPointOfView: SCNNode? {
+        guard let inspectorScene else { return nil }
+        if let inspectorCameraTransform {
+            // Scene再構築時も同じ視点を再利用できるよう、transformから一時POVを作る。
+            let node = SCNNode()
+            node.camera = SCNCamera()
+            node.simdTransform = inspectorCameraTransform
+            return node
+        }
+        return inspectorScene.rootNode.childNode(withName: "InspectorCamera", recursively: true)
+    }
+
+    private func frameCameraForBrushEditingEntry() {
+        // Brush開始時は「まず塗れるサイズ」を優先し、ROI系ターゲットへ少し寄ってフレーミング。
+        let focusTarget = cropBrushPreview?.autoROI ?? pendingROI ?? currentInput.roi ?? currentInput.package.sourceBounds
+        let cameraNode = SceneOverlayBuilder.makeFramingCamera(bounds: focusTarget, distanceScale: 1.68)
+        inspectorCameraTransform = cameraNode.simdTransform
+    }
+
+    private func fitModel() {
+        let cameraNode = SceneOverlayBuilder.makeFramingCamera(bounds: currentInput.package.sourceBounds, distanceScale: 1.9)
+        inspectorCameraTransform = cameraNode.simdTransform
+    }
+
+    private func fitROI() {
+        let target = cropBrushPreview?.autoROI ?? pendingROI ?? currentInput.roi ?? currentInput.package.sourceBounds
+        let cameraNode = SceneOverlayBuilder.makeFramingCamera(bounds: target, distanceScale: 1.85)
+        inspectorCameraTransform = cameraNode.simdTransform
+    }
+
+    private func fitBrush() {
+        let target = SpatialBounds3D(points: (cropBrushPreview?.selectedPoints ?? []).map(\.simd))
+            ?? cropBrushPreview?.autoROI
+            ?? pendingROI
+            ?? currentInput.roi
+            ?? currentInput.package.sourceBounds
+        let cameraNode = SceneOverlayBuilder.makeFramingCamera(bounds: target, distanceScale: 1.65)
+        inspectorCameraTransform = cameraNode.simdTransform
+    }
+
+    private func resetView() {
+        inspectorCameraTransform = nil
+        resetViewToken += 1
+    }
+}
+
+private enum BrushInteractionMode: String, CaseIterable {
+    case paint = "Paint"
+    case navigate = "Navigate"
 }
