@@ -40,11 +40,16 @@ final class AppModel: ObservableObject {
 
     var canCompare: Bool {
         guard let newInput, let usedInput else { return false }
-        let minPoints = config.minimumMaskPoints
-        return newInput.package.bluePoints.count >= minPoints
-            && newInput.package.redPoints.count >= minPoints
-            && usedInput.package.bluePoints.count >= minPoints
-            && usedInput.package.redPoints.count >= minPoints
+        do {
+            let effective = try makeEffectivePackagesForComparison(newInput: newInput, usedInput: usedInput)
+            let minPoints = config.minimumMaskPoints
+            return effective.new.bluePoints.count >= minPoints
+                && effective.new.redPoints.count >= minPoints
+                && effective.used.bluePoints.count >= minPoints
+                && effective.used.redPoints.count >= minPoints
+        } catch {
+            return false
+        }
     }
 
     func importModel(kind: ModelKind, from pickedURL: URL) async {
@@ -137,8 +142,7 @@ final class AppModel: ObservableObject {
         return CropBrushEngine.makeManualRegionPreview(
             samples: input.package.cachedSamples,
             manualBrush: brush,
-            bluePoints: input.package.bluePoints,
-            redPoints: input.package.redPoints
+            role: .alignment
         )
     }
 
@@ -147,8 +151,7 @@ final class AppModel: ObservableObject {
         return CropBrushEngine.makeManualRegionPreview(
             samples: input.package.cachedSamples,
             manualBrush: brush,
-            bluePoints: input.package.bluePoints,
-            redPoints: input.package.redPoints
+            role: .comparison
         )
     }
 
@@ -306,7 +309,8 @@ final class AppModel: ObservableObject {
     }
 
     private func makeEffectivePackagesForComparison(newInput: ModelInput, usedInput: ModelInput) throws -> (new: LoadedModelPackage, used: LoadedModelPackage) {
-        // MVP方針: AnalysisCoreは触らず、比較直前に blue/red を空間ゲートした package を組み立てる。
+        // MVP方針: AnalysisCoreは触らず、比較直前に有効 blue/red package を組み立てる。
+        // Manual Region がある場合は auto mask を gate せず、選択 sample をそのまま使う。
         let minPoints = config.minimumMaskPoints
         let hasNewAlignment = hasManualRegion(input: newInput, role: .alignment)
         let hasUsedAlignment = hasManualRegion(input: usedInput, role: .alignment)
@@ -324,29 +328,25 @@ final class AppModel: ObservableObject {
         var effectiveUsed = usedInput.package
 
         if hasNewAlignment, let newBrush = newInput.alignmentBrush, let usedBrush = usedInput.alignmentBrush {
-            // Alignment Region は bluePoints のみに適用する（責務分離: crop ROI とは混ぜない）。
-            let newSelected = CropBrushEngine.selectedPointPositions(from: newInput.package.cachedSamples, manualBrush: newBrush)
-            let usedSelected = CropBrushEngine.selectedPointPositions(from: usedInput.package.cachedSamples, manualBrush: usedBrush)
-            let gatedNewBlue = CropBrushEngine.gate(points: newInput.package.bluePoints, selectedPositions: newSelected)
-            let gatedUsedBlue = CropBrushEngine.gate(points: usedInput.package.bluePoints, selectedPositions: usedSelected)
-            guard gatedNewBlue.count >= minPoints, gatedUsedBlue.count >= minPoints else {
-                throw PoCError.profileFailed("Alignment Region の適用後、blue 点数が不足しました。最低 \(minPoints) 点必要です。")
+            // Alignment Region は manual selected samples を effective blue points に直接置換する。
+            let newSelected = CropBrushEngine.effectiveManualRegionPoints(samples: newInput.package.cachedSamples, manualBrush: newBrush)
+            let usedSelected = CropBrushEngine.effectiveManualRegionPoints(samples: usedInput.package.cachedSamples, manualBrush: usedBrush)
+            guard newSelected.count >= minPoints, usedSelected.count >= minPoints else {
+                throw PoCError.profileFailed("Alignment Region の selected samples が不足しました。最低 \(minPoints) 点必要です。")
             }
-            effectiveNew = effectiveNew.replacingMasks(bluePoints: gatedNewBlue, redPoints: effectiveNew.redPoints)
-            effectiveUsed = effectiveUsed.replacingMasks(bluePoints: gatedUsedBlue, redPoints: effectiveUsed.redPoints)
+            effectiveNew = effectiveNew.replacingMasks(bluePoints: newSelected, redPoints: effectiveNew.redPoints)
+            effectiveUsed = effectiveUsed.replacingMasks(bluePoints: usedSelected, redPoints: effectiveUsed.redPoints)
         }
 
         if hasNewComparison, let newBrush = newInput.comparisonBrush, let usedBrush = usedInput.comparisonBrush {
-            // Comparison Region は redPoints のみに適用する。
-            let newSelected = CropBrushEngine.selectedPointPositions(from: newInput.package.cachedSamples, manualBrush: newBrush)
-            let usedSelected = CropBrushEngine.selectedPointPositions(from: usedInput.package.cachedSamples, manualBrush: usedBrush)
-            let gatedNewRed = CropBrushEngine.gate(points: newInput.package.redPoints, selectedPositions: newSelected)
-            let gatedUsedRed = CropBrushEngine.gate(points: usedInput.package.redPoints, selectedPositions: usedSelected)
-            guard gatedNewRed.count >= minPoints, gatedUsedRed.count >= minPoints else {
-                throw PoCError.profileFailed("Comparison Region の適用後、red 点数が不足しました。最低 \(minPoints) 点必要です。")
+            // Comparison Region は manual selected samples を effective red points に直接置換する。
+            let newSelected = CropBrushEngine.effectiveManualRegionPoints(samples: newInput.package.cachedSamples, manualBrush: newBrush)
+            let usedSelected = CropBrushEngine.effectiveManualRegionPoints(samples: usedInput.package.cachedSamples, manualBrush: usedBrush)
+            guard newSelected.count >= minPoints, usedSelected.count >= minPoints else {
+                throw PoCError.profileFailed("Comparison Region の selected samples が不足しました。最低 \(minPoints) 点必要です。")
             }
-            effectiveNew = effectiveNew.replacingMasks(bluePoints: effectiveNew.bluePoints, redPoints: gatedNewRed)
-            effectiveUsed = effectiveUsed.replacingMasks(bluePoints: effectiveUsed.bluePoints, redPoints: gatedUsedRed)
+            effectiveNew = effectiveNew.replacingMasks(bluePoints: effectiveNew.bluePoints, redPoints: newSelected)
+            effectiveUsed = effectiveUsed.replacingMasks(bluePoints: effectiveUsed.bluePoints, redPoints: usedSelected)
         }
 
         return (effectiveNew, effectiveUsed)

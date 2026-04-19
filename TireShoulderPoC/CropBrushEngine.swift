@@ -69,20 +69,22 @@ enum CropBrushEngine {
         selectedSamples(from: samples, manualBrush: manualBrush).map(\.worldPosition)
     }
 
+    /// Manual Region は auto mask のゲートではなく、ユーザーが塗った sampled surface を
+    /// そのまま比較用点群として使う。
+    static func effectiveManualRegionPoints(samples: [CachedCentroidSample],
+                                            manualBrush: ManualRegionBrushState) -> [Point3] {
+        selectedPointPositions(from: samples, manualBrush: manualBrush)
+    }
+
     static func makeManualRegionPreview(samples: [CachedCentroidSample],
                                         manualBrush: ManualRegionBrushState,
-                                        bluePoints: [Point3],
-                                        redPoints: [Point3],
-                                        epsilonMeters: Float = 0.0015) -> ManualRegionPreview {
-        let selected = selectedSamples(from: samples, manualBrush: manualBrush)
-        let selectedPositions = selected.map(\.worldPosition)
-        let gatedBlue = gate(points: bluePoints, selectedPositions: selectedPositions, epsilonMeters: epsilonMeters)
-        let gatedRed = gate(points: redPoints, selectedPositions: selectedPositions, epsilonMeters: epsilonMeters)
+                                        role: ManualRegionRole) -> ManualRegionPreview {
+        let selectedPositions = effectiveManualRegionPoints(samples: samples, manualBrush: manualBrush)
         return ManualRegionPreview(
             selectedPoints: selectedPositions,
             selectedCount: selectedPositions.count,
-            gatedBlueCount: gatedBlue.count,
-            gatedRedCount: gatedRed.count
+            effectivePointCount: selectedPositions.count,
+            role: role
         )
     }
 
