@@ -211,8 +211,8 @@ struct ManualRegionBrushState: Hashable, Sendable {
 struct ManualRegionPreview: Sendable {
     let selectedPoints: [Point3]
     let selectedCount: Int
-    let gatedBlueCount: Int
-    let gatedRedCount: Int
+    let effectivePointCount: Int
+    let role: ManualRegionRole
 }
 
 struct MaterialInspectionRecord: Identifiable, Sendable {

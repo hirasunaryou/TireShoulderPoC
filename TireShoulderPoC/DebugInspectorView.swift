@@ -476,6 +476,9 @@ struct DebugInspectorView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Manual Regions (MVP)")
                 .font(.subheadline.bold())
+            Text("自動青/赤が弱い場合でも、塗った sampled surface をそのまま位置合わせ/比較に使います。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Picker("編集対象", selection: $manualRegionRole) {
                 ForEach(ManualRegionRole.allCases) { role in
                     Text(role.rawValue).tag(role)
@@ -492,17 +495,21 @@ struct DebugInspectorView: View {
             if let preview {
                 Text("selected sample count: \(preview.selectedCount)")
                     .font(.caption)
-                Text("gated blue count: \(preview.gatedBlueCount)")
+                Text(preview.role == .alignment
+                     ? "effective alignment points: \(preview.effectivePointCount)"
+                     : "effective comparison points: \(preview.effectivePointCount)")
                     .font(.caption)
-                Text("gated red count: \(preview.gatedRedCount)")
-                    .font(.caption)
+                manualRegionWarning(role: preview.role, selectedCount: preview.selectedCount)
             } else {
                 Text("selected sample count: 0")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("gated blue count: 0 / gated red count: 0")
+                Text(manualRegionRole == .alignment
+                     ? "effective alignment points: 0"
+                     : "effective comparison points: 0")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                manualRegionWarning(role: manualRegionRole, selectedCount: 0)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -933,9 +940,23 @@ struct DebugInspectorView: View {
 
     private func manualSummaryRow(role: ManualRegionRole, title: String) -> some View {
         let preview = role == .alignment ? alignmentRegionPreview : comparisonRegionPreview
-        return Text("\(title): selected \(preview?.selectedCount ?? 0), gated blue \(preview?.gatedBlueCount ?? 0), gated red \(preview?.gatedRedCount ?? 0)")
+        return Text(role == .alignment
+                    ? "\(title): selected \(preview?.selectedCount ?? 0), effective blue \(preview?.effectivePointCount ?? 0)"
+                    : "\(title): selected \(preview?.selectedCount ?? 0), effective red \(preview?.effectivePointCount ?? 0)")
             .font(.caption2)
             .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private func manualRegionWarning(role: ManualRegionRole, selectedCount: Int) -> some View {
+        let minPoints = appModel.config.minimumMaskPoints
+        if selectedCount < minPoints {
+            Text(role == .alignment
+                 ? "Alignment Region は最低 \(minPoints) 点必要です（現在 \(selectedCount)）"
+                 : "Comparison Region は最低 \(minPoints) 点必要です（現在 \(selectedCount)）")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
     }
 
     private func normalize(_ value: Float, sourceMin: Float, sourceMax: Float) -> Float {
