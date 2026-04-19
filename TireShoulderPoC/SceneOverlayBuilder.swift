@@ -145,6 +145,24 @@ enum SceneOverlayBuilder {
                 )
             )
         }
+        if !options.selectedAlignmentRegionPoints.isEmpty {
+            scene.rootNode.addChildNode(
+                pointCloudNode(
+                    points: options.selectedAlignmentRegionPoints.map(\.simd),
+                    color: .systemGreen,
+                    pointRadius: 0.0010
+                )
+            )
+        }
+        if !options.selectedComparisonRegionPoints.isEmpty {
+            scene.rootNode.addChildNode(
+                pointCloudNode(
+                    points: options.selectedComparisonRegionPoints.map(\.simd),
+                    color: .systemPink,
+                    pointRadius: 0.0010
+                )
+            )
+        }
         if let recentBrushStamp = options.recentBrushStamp {
             let recentNode = SCNNode(geometry: SCNSphere(radius: CGFloat(max(recentBrushStamp.radiusMeters * 0.65, 0.0012))))
             recentNode.simdPosition = recentBrushStamp.center.simd

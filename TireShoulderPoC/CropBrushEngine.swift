@@ -54,4 +54,45 @@ enum CropBrushEngine {
             autoROI: autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
         )
     }
+
+    static func selectedSamples(from samples: [CachedCentroidSample], manualRegion brush: ManualRegionBrushState) -> [CachedCentroidSample] {
+        guard brush.isEnabled else { return [] }
+        let cropState = CropBrushState(stamps: brush.stamps, radiusMeters: brush.radiusMeters, autoROIMarginMeters: 0)
+        return selectedSamples(from: samples, brush: cropState)
+    }
+
+    static func selectedPoints(from samples: [CachedCentroidSample], manualRegion brush: ManualRegionBrushState) -> [Point3] {
+        selectedSamples(from: samples, manualRegion: brush).map(\.worldPosition)
+    }
+
+    static func gate(points: [Point3],
+                     by selectedSamples: [CachedCentroidSample],
+                     epsilonMeters: Float = 0.0012) -> [Point3] {
+        guard !points.isEmpty, !selectedSamples.isEmpty else { return [] }
+        let keys = Set(selectedSamples.map { quantizedKey(for: $0.worldPosition, epsilonMeters: epsilonMeters) })
+        return points.filter { keys.contains(quantizedKey(for: $0, epsilonMeters: epsilonMeters)) }
+    }
+
+    static func makeManualRegionPreview(samples: [CachedCentroidSample],
+                                        bluePoints: [Point3],
+                                        redPoints: [Point3],
+                                        brush: ManualRegionBrushState?) -> ManualRegionPreview? {
+        guard let brush else { return nil }
+        let selected = selectedSamples(from: samples, manualRegion: brush)
+        return ManualRegionPreview(
+            selectedPoints: selected.map(\.worldPosition),
+            selectedCount: selected.count,
+            gatedBlueCount: gate(points: bluePoints, by: selected).count,
+            gatedRedCount: gate(points: redPoints, by: selected).count
+        )
+    }
+
+    private static func quantizedKey(for point: Point3, epsilonMeters: Float) -> SIMD3<Int> {
+        let scale = max(epsilonMeters, 0.000_001)
+        return SIMD3<Int>(
+            Int(round(point.x / scale)),
+            Int(round(point.y / scale)),
+            Int(round(point.z / scale))
+        )
+    }
 }

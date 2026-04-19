@@ -44,6 +44,8 @@ struct InspectorSceneOptions: Sendable {
     var showColorRichPoints: Bool
     var showROIBounds: Bool
     var selectedBrushPoints: [Point3]
+    var selectedAlignmentRegionPoints: [Point3]
+    var selectedComparisonRegionPoints: [Point3]
     var recentBrushStamp: BrushStamp3D?
     var brushAutoROI: SpatialBounds3D?
     var pendingROI: SpatialBounds3D?
@@ -60,6 +62,8 @@ struct InspectorSceneOptions: Sendable {
             showColorRichPoints: false,
             showROIBounds: false,
             selectedBrushPoints: [],
+            selectedAlignmentRegionPoints: [],
+            selectedComparisonRegionPoints: [],
             recentBrushStamp: nil,
             brushAutoROI: nil,
             pendingROI: nil,
@@ -189,6 +193,28 @@ struct CropBrushPreview: Sendable {
     let autoROI: SpatialBounds3D?
 }
 
+enum ManualRegionRole: String, CaseIterable, Identifiable, Sendable {
+    case alignment = "Alignment"
+    case comparison = "Comparison"
+
+    var id: String { rawValue }
+}
+
+struct ManualRegionBrushState: Hashable, Sendable {
+    var stamps: [BrushStamp3D]
+    var radiusMeters: Float
+    var isEnabled: Bool
+
+    static let `default` = ManualRegionBrushState(stamps: [], radiusMeters: 0.006, isEnabled: true)
+}
+
+struct ManualRegionPreview: Sendable {
+    let selectedPoints: [Point3]
+    let selectedCount: Int
+    let gatedBlueCount: Int
+    let gatedRedCount: Int
+}
+
 struct MaterialInspectionRecord: Identifiable, Sendable {
     let id = UUID()
     let nodeName: String
@@ -272,6 +298,8 @@ struct ModelInput {
     let fileURL: URL
     var roi: SpatialBounds3D?
     var cropBrush: CropBrushState?
+    var alignmentBrush: ManualRegionBrushState?
+    var comparisonBrush: ManualRegionBrushState?
     var package: LoadedModelPackage
 }
 
