@@ -80,10 +80,10 @@ enum SceneOverlayBuilder {
         scene.rootNode.addChildNode(rawContainer)
 
         if renderMode == .sampledRGB {
-            // 解析に使う cachedSamples.rgb をそのまま可視化。
+            // 解析対象(activeSamples)の rgb をそのまま可視化。
             scene.rootNode.addChildNode(
                 coloredPointCloudNode(
-                    samples: package.cachedSamples,
+                    samples: package.activeSamples,
                     pointRadius: 0.00035
                 )
             )

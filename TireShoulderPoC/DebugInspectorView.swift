@@ -335,7 +335,7 @@ struct DebugInspectorView: View {
 
     private var cropBrushEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Crop Brush (MVP)")
+            Text("Crop Brush (Persistent Surface Mask)")
                 .font(.subheadline.bold())
 
             Toggle("Brush編集モード", isOn: $isBrushEditing)
@@ -594,7 +594,7 @@ struct DebugInspectorView: View {
     }
 
     private func syncBrushControlsFromCurrentInput() {
-        let brush = currentInput.cropBrush ?? .default
+        let brush = currentInput.surfaceMasks.crop ?? .default
         brushRadiusMeters = brush.radiusMeters
         brushAutoROIMarginMeters = brush.autoROIMarginMeters
     }
@@ -604,7 +604,7 @@ struct DebugInspectorView: View {
     }
 
     private func addBrushStamp(at point: Point3) {
-        var brush = currentInput.cropBrush ?? CropBrushState.default
+        var brush = currentInput.surfaceMasks.crop ?? CropBrushState.default
         brush.radiusMeters = brushRadiusMeters
         brush.autoROIMarginMeters = brushAutoROIMarginMeters
         brush.stamps.append(
@@ -612,12 +612,12 @@ struct DebugInspectorView: View {
         )
         appModel.setCropBrush(kind: kind, brush: brush)
         refreshCropBrushPreview()
-        refreshInspectorScene()
-        refreshROIPreviewScene()
+        // ここで毎回シーンを再生成するとカメラが初期位置へ戻り、
+        // 拡大して狙ったまま連続スタンプできないため、あえて再描画しない。
     }
 
     private func updateCropBrushRadius(_ radius: Float) {
-        var brush = currentInput.cropBrush ?? CropBrushState.default
+        var brush = currentInput.surfaceMasks.crop ?? CropBrushState.default
         brush.radiusMeters = radius
         appModel.setCropBrush(kind: kind, brush: brush)
         refreshCropBrushPreview()
@@ -625,7 +625,7 @@ struct DebugInspectorView: View {
     }
 
     private func updateCropBrushMargin(_ margin: Float) {
-        var brush = currentInput.cropBrush ?? CropBrushState.default
+        var brush = currentInput.surfaceMasks.crop ?? CropBrushState.default
         brush.autoROIMarginMeters = margin
         appModel.setCropBrush(kind: kind, brush: brush)
         refreshCropBrushPreview()

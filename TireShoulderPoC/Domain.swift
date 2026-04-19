@@ -146,6 +146,40 @@ struct CropBrushState: Hashable, Sendable {
     static let `default` = CropBrushState(stamps: [], radiusMeters: 0.006, autoROIMarginMeters: 0.004)
 }
 
+/// 将来の拡張（①位置合わせ領域 / ②比較領域）を見据えたブラシ用途。
+/// まずは crop だけをUIに出し、内部構造は用途追加に耐える形にしておく。
+enum SurfaceMaskPurpose: String, CaseIterable, Hashable, Sendable {
+    case crop
+    case alignment
+    case comparison
+}
+
+/// 用途ごとのブラシ状態コンテナ。
+/// 将来 alignment/comparison 用ブラシを追加する際はここに保存するだけで、
+/// `ModelInput` の構造を崩さずに拡張できる。
+struct SurfaceMaskSet: Hashable, Sendable {
+    var crop: CropBrushState?
+    var alignment: CropBrushState?
+    var comparison: CropBrushState?
+
+    subscript(_ purpose: SurfaceMaskPurpose) -> CropBrushState? {
+        get {
+            switch purpose {
+            case .crop: return crop
+            case .alignment: return alignment
+            case .comparison: return comparison
+            }
+        }
+        set {
+            switch purpose {
+            case .crop: crop = newValue
+            case .alignment: alignment = newValue
+            case .comparison: comparison = newValue
+            }
+        }
+    }
+}
+
 struct MaterialInspectionRecord: Identifiable, Sendable {
     let id = UUID()
     let nodeName: String
@@ -208,9 +242,12 @@ struct LoadedModelPackage: Sendable {
     let materialRecords: [MaterialInspectionRecord]
     let modelIOMaterialRecords: [ModelIOMaterialInspectionRecord]
     let cachedSamples: [CachedCentroidSample]
+    /// ブラシやROI後に「現在有効」とみなすサンプル。
+    /// 表示・再分類はこの配列を基準に行う。
+    let activeSamples: [CachedCentroidSample]
     let sourceBounds: SpatialBounds3D
-    var sampledPoints: [Point3] { cachedSamples.map(\.worldPosition) }
-    var colorRichPoints: [Point3] { cachedSamples.filter { $0.hsv.saturation >= 0.05 }.map(\.worldPosition) }
+    var sampledPoints: [Point3] { activeSamples.map(\.worldPosition) }
+    var colorRichPoints: [Point3] { activeSamples.filter { $0.hsv.saturation >= 0.05 }.map(\.worldPosition) }
     let meanR: Float
     let meanG: Float
     let meanB: Float
@@ -228,7 +265,7 @@ struct ModelInput {
     let kind: ModelKind
     let fileURL: URL
     var roi: SpatialBounds3D?
-    var cropBrush: CropBrushState?
+    var surfaceMasks: SurfaceMaskSet = SurfaceMaskSet()
     var package: LoadedModelPackage
 }
 
