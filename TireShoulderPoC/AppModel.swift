@@ -85,8 +85,9 @@ final class AppModel: ObservableObject {
     /// ROI変更時はこちらを使ってUSDZ全体を再inspectする。
     /// `reextractMasks` は cachedSamples のしきい値再分類専用であり、
     /// ROIで三角形を除外し直す責務は持たせない。
-    func reinspectModel(kind: ModelKind, reason: String = "ROIを反映") async {
-        guard var input = modelInput(for: kind) else { return }
+    func reinspectModel(kind: ModelKind, reason: String = "ROIを反映") async -> ROIReinspectDelta? {
+        guard var input = modelInput(for: kind) else { return nil }
+        let before = input.package
 
         isBusy = true
         errorMessage = nil
@@ -105,12 +106,22 @@ final class AppModel: ObservableObject {
             input.package = package
             setModelInput(input, for: kind)
             statusMessage = makeImportSummary(kind: kind, package: package)
+            isBusy = false
+            return ROIReinspectDelta(
+                beforeSamples: before.totalSamples,
+                afterSamples: package.totalSamples,
+                beforeBlue: before.bluePoints.count,
+                afterBlue: package.bluePoints.count,
+                beforeRed: before.redPoints.count,
+                afterRed: package.redPoints.count
+            )
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "\(kind.rawValue) の再解析に失敗しました。"
         }
 
         isBusy = false
+        return nil
     }
 
     func runComparison() async {

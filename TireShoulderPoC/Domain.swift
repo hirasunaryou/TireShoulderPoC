@@ -186,6 +186,15 @@ struct ModelInput {
     var package: LoadedModelPackage
 }
 
+struct ROIReinspectDelta: Sendable {
+    let beforeSamples: Int
+    let afterSamples: Int
+    let beforeBlue: Int
+    let afterBlue: Int
+    let beforeRed: Int
+    let afterRed: Int
+}
+
 struct ProfileSample: Identifiable, Sendable {
     let id = UUID()
     let xMM: Double
