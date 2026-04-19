@@ -2,6 +2,28 @@ import Foundation
 import SceneKit
 import SwiftUI
 
+struct ROIReinspectDelta: Sendable {
+    let beforeSamples: Int
+    let afterSamples: Int
+    let beforeBlue: Int
+    let afterBlue: Int
+    let beforeRed: Int
+    let afterRed: Int
+
+    init(before: LoadedModelPackage, after: LoadedModelPackage) {
+        beforeSamples = before.totalSamples
+        afterSamples = after.totalSamples
+        beforeBlue = before.bluePoints.count
+        afterBlue = after.bluePoints.count
+        beforeRed = before.redPoints.count
+        afterRed = after.redPoints.count
+    }
+
+    var compactText: String {
+        "samples: \(beforeSamples) -> \(afterSamples), blue: \(beforeBlue) -> \(afterBlue), red: \(beforeRed) -> \(afterRed)"
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var newInput: ModelInput?
@@ -85,8 +107,8 @@ final class AppModel: ObservableObject {
     /// ROI変更時はこちらを使ってUSDZ全体を再inspectする。
     /// `reextractMasks` は cachedSamples のしきい値再分類専用であり、
     /// ROIで三角形を除外し直す責務は持たせない。
-    func reinspectModel(kind: ModelKind, reason: String = "ROIを反映") async {
-        guard var input = modelInput(for: kind) else { return }
+    func reinspectModel(kind: ModelKind, reason: String = "ROIを反映") async -> ROIReinspectDelta? {
+        guard var input = modelInput(for: kind) else { return nil }
 
         isBusy = true
         errorMessage = nil
@@ -99,18 +121,23 @@ final class AppModel: ObservableObject {
             let config = self.config
             let fileURL = input.fileURL
             let roi = input.roi
+            let previousPackage = input.package
             let package = try await Task.detached(priority: .userInitiated) {
                 try USDZLoader.inspect(url: fileURL, config: config, roi: roi)
             }.value
             input.package = package
             setModelInput(input, for: kind)
-            statusMessage = makeImportSummary(kind: kind, package: package)
+            let delta = ROIReinspectDelta(before: previousPackage, after: package)
+            statusMessage = "\(makeImportSummary(kind: kind, package: package)) | \(delta.compactText)"
+            isBusy = false
+            return delta
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "\(kind.rawValue) の再解析に失敗しました。"
         }
 
         isBusy = false
+        return nil
     }
 
     func runComparison() async {
