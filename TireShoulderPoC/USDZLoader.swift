@@ -623,6 +623,60 @@ enum USDZLoader {
                 )
             )
         }
+
+        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
+        let colorRichCount = colorRichSamples.count
+        print("[HSV.debug.colorRich] colorRichCount=\(colorRichCount)")
+
+        guard colorRichCount > 0 else {
+            print("[HSV.debug.colorRich] No color-rich samples (saturation >= 0.05)")
+            return
+        }
+
+        var colorRichHueHistogram = [Int](repeating: 0, count: 12)
+        var colorRichBlueRuleCount = 0
+        var colorRichRedRuleCount = 0
+
+        for sample in colorRichSamples {
+            let normalizedHue = min(max(sample.hsv.hue, 0), 359.999_9)
+            let binIndex = min(11, Int(normalizedHue / 30))
+            colorRichHueHistogram[binIndex] += 1
+
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                colorRichBlueRuleCount += 1
+            case .red:
+                colorRichRedRuleCount += 1
+            case .other:
+                break
+            }
+        }
+
+        let colorRichHistogramSummary = colorRichHueHistogram.enumerated()
+            .map { index, count -> String in
+                let start = index * 30
+                let end = start + 30
+                return "\(start)-\(end):\(count)"
+            }
+            .joined(separator: " ")
+        print("[HSV.debug.colorRich] hueHistogram(12bins) \(colorRichHistogramSummary)")
+        print("[HSV.debug.colorRich] blueRule=\(colorRichBlueRuleCount) redRule=\(colorRichRedRuleCount)")
+
+        let representativeColorRichSamples = representativeHSVDebugSamples(colorRichSamples, maxCount: 20)
+        for (index, sample) in representativeColorRichSamples.enumerated() {
+            print(
+                String(
+                    format: "[HSV.colorRich.sample %02d] h=%.1f s=%.3f v=%.3f rgb=(%.3f,%.3f,%.3f)",
+                    index,
+                    sample.hsv.hue,
+                    sample.hsv.saturation,
+                    sample.hsv.value,
+                    sample.rgb.x,
+                    sample.rgb.y,
+                    sample.rgb.z
+                )
+            )
+        }
     }
 
     private static func representativeHSVDebugSamples(
