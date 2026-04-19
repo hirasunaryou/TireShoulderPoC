@@ -496,8 +496,8 @@ enum USDZLoader {
             for anySubmesh in submeshes {
                 guard let material = (anySubmesh as? MDLSubmesh)?.material,
                       let texture = material.property(with: .baseColor)?.textureSamplerValue?.texture,
-                      let cgImage = texture.imageFromTexture(),
-                      let sampler = TextureSampler(cgImage: cgImage) else {
+                      let unmanagedImage = texture.imageFromTexture(),
+                      let sampler = TextureSampler(cgImage: unmanagedImage.takeUnretainedValue()) else {
                     continue
                 }
                 samplers.append(sampler)
