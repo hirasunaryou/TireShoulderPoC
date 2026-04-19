@@ -183,6 +183,7 @@ private struct TextureSampler {
 
 enum USDZLoader {
     private static let maxCachedSamples = 12_000
+    static var nearColorRichRadiusMeters: Float = 0.01
 
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
@@ -204,8 +205,6 @@ enum USDZLoader {
             throw PoCError.geometryMissing
         }
 
-        var bluePoints: [SIMD3<Float>] = []
-        var redPoints: [SIMD3<Float>] = []
         var totalSamples = 0
         var skippedNoUVTriangles = 0
         var materialRecords: [MaterialInspectionRecord] = []
@@ -310,14 +309,6 @@ enum USDZLoader {
                         )
                     }
 
-                    switch classify(hsv: hsv, config: config) {
-                    case .blue:
-                        bluePoints.append(centroidPosition)
-                    case .red:
-                        redPoints.append(centroidPosition)
-                    case .other:
-                        break
-                    }
                 }
 
                 let record = MaterialInspectionRecord(
@@ -340,6 +331,14 @@ enum USDZLoader {
                 materialRecords.append(record)
             }
         }
+
+        let classifiedFromCache = classifyCachedSamples(
+            cachedSamples,
+            config: config,
+            nearColorRichRadiusMeters: nearColorRichRadiusMeters
+        )
+        let bluePoints = classifiedFromCache.bluePoints
+        let redPoints = classifiedFromCache.redPoints
 
         let rawBlueCount = bluePoints.count
         let rawRedCount = redPoints.count
@@ -389,17 +388,13 @@ enum USDZLoader {
     static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
         var bluePoints: [SIMD3<Float>] = []
         var redPoints: [SIMD3<Float>] = []
-
-        for sample in package.cachedSamples {
-            switch classify(hsv: sample.hsv, config: config) {
-            case .blue:
-                bluePoints.append(sample.worldPosition.simd)
-            case .red:
-                redPoints.append(sample.worldPosition.simd)
-            case .other:
-                break
-            }
-        }
+        let classifiedFromCache = classifyCachedSamples(
+            package.cachedSamples,
+            config: config,
+            nearColorRichRadiusMeters: nearColorRichRadiusMeters
+        )
+        bluePoints = classifiedFromCache.bluePoints
+        redPoints = classifiedFromCache.redPoints
 
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
@@ -726,6 +721,47 @@ enum USDZLoader {
         }
 
         return .other
+    }
+
+    private static func classifyCachedSamples(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig,
+        nearColorRichRadiusMeters: Float
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>]) {
+        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
+        guard !colorRichSamples.isEmpty else { return ([], []) }
+
+        let radiusSquared = nearColorRichRadiusMeters * nearColorRichRadiusMeters
+        var bluePoints: [SIMD3<Float>] = []
+        var redPoints: [SIMD3<Float>] = []
+        var candidateNearColorRichCount = 0
+        var nearColorRichBlueRuleCount = 0
+        var nearColorRichRedRuleCount = 0
+
+        for sample in samples {
+            let isNearColorRich = colorRichSamples.contains { colorRichSample in
+                simd_distance_squared(sample.worldPosition.simd, colorRichSample.worldPosition.simd) <= radiusSquared
+            }
+
+            guard isNearColorRich else { continue }
+            candidateNearColorRichCount += 1
+
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                nearColorRichBlueRuleCount += 1
+                bluePoints.append(sample.worldPosition.simd)
+            case .red:
+                nearColorRichRedRuleCount += 1
+                redPoints.append(sample.worldPosition.simd)
+            case .other:
+                break
+            }
+        }
+
+        print("[HSV.debug.nearColorRich] candidateNearColorRichCount=\(candidateNearColorRichCount)")
+        print("[HSV.debug.nearColorRich] blueRule=\(nearColorRichBlueRuleCount) redRule=\(nearColorRichRedRuleCount)")
+
+        return (bluePoints, redPoints)
     }
 
     private static func hsvColor(from rgb: SIMD3<Float>) -> HSVColor {
