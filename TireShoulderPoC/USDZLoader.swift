@@ -183,6 +183,7 @@ private struct TextureSampler {
 
 enum USDZLoader {
     private static let maxCachedSamples = 12_000
+    static var nearColorRichRadiusMeters: Float = 0.01
 
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
@@ -204,8 +205,6 @@ enum USDZLoader {
             throw PoCError.geometryMissing
         }
 
-        var bluePoints: [SIMD3<Float>] = []
-        var redPoints: [SIMD3<Float>] = []
         var totalSamples = 0
         var skippedNoUVTriangles = 0
         var materialRecords: [MaterialInspectionRecord] = []
@@ -310,14 +309,6 @@ enum USDZLoader {
                         )
                     }
 
-                    switch classify(hsv: hsv, config: config) {
-                    case .blue:
-                        bluePoints.append(centroidPosition)
-                    case .red:
-                        redPoints.append(centroidPosition)
-                    case .other:
-                        break
-                    }
                 }
 
                 let record = MaterialInspectionRecord(
@@ -341,6 +332,9 @@ enum USDZLoader {
             }
         }
 
+        let classifiedPoints = classifyNearColorRichSamples(cachedSamples, config: config)
+        let bluePoints = classifiedPoints.bluePoints
+        let redPoints = classifiedPoints.redPoints
         let rawBlueCount = bluePoints.count
         let rawRedCount = redPoints.count
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
@@ -387,19 +381,9 @@ enum USDZLoader {
     }
 
     static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
-        var bluePoints: [SIMD3<Float>] = []
-        var redPoints: [SIMD3<Float>] = []
-
-        for sample in package.cachedSamples {
-            switch classify(hsv: sample.hsv, config: config) {
-            case .blue:
-                bluePoints.append(sample.worldPosition.simd)
-            case .red:
-                redPoints.append(sample.worldPosition.simd)
-            case .other:
-                break
-            }
-        }
+        let classifiedPoints = classifyNearColorRichSamples(package.cachedSamples, config: config)
+        let bluePoints = classifiedPoints.bluePoints
+        let redPoints = classifiedPoints.redPoints
 
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
@@ -661,6 +645,9 @@ enum USDZLoader {
             .joined(separator: " ")
         print("[HSV.debug.colorRich] hueHistogram(12bins) \(colorRichHistogramSummary)")
         print("[HSV.debug.colorRich] blueRule=\(colorRichBlueRuleCount) redRule=\(colorRichRedRuleCount)")
+        let nearColorRichDiagnostics = nearColorRichDiagnostics(samples, config: config)
+        print("[HSV.debug.nearColorRich] candidateNearColorRichCount=\(nearColorRichDiagnostics.candidateNearColorRichCount)")
+        print("[HSV.debug.nearColorRich] blueRule=\(nearColorRichDiagnostics.blueRuleCount) redRule=\(nearColorRichDiagnostics.redRuleCount)")
 
         let representativeColorRichSamples = representativeHSVDebugSamples(colorRichSamples, maxCount: 20)
         for (index, sample) in representativeColorRichSamples.enumerated() {
@@ -677,6 +664,69 @@ enum USDZLoader {
                 )
             )
         }
+    }
+
+    private static func classifyNearColorRichSamples(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>]) {
+        let diagnostics = nearColorRichDiagnostics(samples, config: config)
+        var bluePoints: [SIMD3<Float>] = []
+        var redPoints: [SIMD3<Float>] = []
+        bluePoints.reserveCapacity(diagnostics.blueRuleCount)
+        redPoints.reserveCapacity(diagnostics.redRuleCount)
+
+        for (sample, isNearColorRich) in zip(samples, diagnostics.nearColorRichFlags) {
+            guard isNearColorRich else { continue }
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                bluePoints.append(sample.worldPosition.simd)
+            case .red:
+                redPoints.append(sample.worldPosition.simd)
+            case .other:
+                break
+            }
+        }
+
+        return (bluePoints, redPoints)
+    }
+
+    private static func nearColorRichDiagnostics(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (nearColorRichFlags: [Bool], candidateNearColorRichCount: Int, blueRuleCount: Int, redRuleCount: Int) {
+        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
+        guard !colorRichSamples.isEmpty else {
+            return ([Bool](repeating: false, count: samples.count), 0, 0, 0)
+        }
+
+        let radiusSquared = nearColorRichRadiusMeters * nearColorRichRadiusMeters
+        var nearColorRichFlags = [Bool](repeating: false, count: samples.count)
+        var candidateNearColorRichCount = 0
+        var blueRuleCount = 0
+        var redRuleCount = 0
+
+        for (index, sample) in samples.enumerated() {
+            let samplePosition = sample.worldPosition.simd
+            let isNearColorRich = colorRichSamples.contains { colorRichSample in
+                simd_distance_squared(samplePosition, colorRichSample.worldPosition.simd) <= radiusSquared
+            }
+
+            guard isNearColorRich else { continue }
+            nearColorRichFlags[index] = true
+            candidateNearColorRichCount += 1
+
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                blueRuleCount += 1
+            case .red:
+                redRuleCount += 1
+            case .other:
+                break
+            }
+        }
+
+        return (nearColorRichFlags, candidateNearColorRichCount, blueRuleCount, redRuleCount)
     }
 
     private static func representativeHSVDebugSamples(
