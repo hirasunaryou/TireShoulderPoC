@@ -113,12 +113,14 @@ private struct TextureSampler {
     func sampleImage(at uv: SIMD2<Float>) -> SIMD3<Float>? {
         guard case .image(let width, let height, let pixels) = mode else { return nil }
 
-        let wrappedU = uv.x - floor(uv.x)
-        var wrappedV = uv.y - floor(uv.y)
-        wrappedV = 1 - wrappedV
+        // Object Capture系のテクスチャは基本的にアトラス前提なので、
+        // ラップより clamp のほうが seam 由来の誤検知を起こしにくい。
+        let clampedU = max(0, min(1, uv.x))
+        var clampedV = max(0, min(1, uv.y))
+        clampedV = 1 - clampedV
 
-        let x = min(width - 1, max(0, Int(round(wrappedU * Float(width - 1)))))
-        let y = min(height - 1, max(0, Int(round(wrappedV * Float(height - 1)))))
+        let x = min(width - 1, max(0, Int(round(clampedU * Float(width - 1)))))
+        let y = min(height - 1, max(0, Int(round(clampedV * Float(height - 1)))))
         let index = (y * width + x) * 4
 
         guard index + 3 < pixels.count else { return nil }
@@ -235,15 +237,15 @@ private struct TextureSampler {
 }
 
 enum USDZLoader {
-    private static let maxCachedSamples = 12_000
-    static var nearColorRichRadiusMeters: Float = 0.01
+    private static let maxCachedSamples = 24_000
+    static var nearColorRichRadiusMeters: Float = 0.004
 
     enum ExtractionMode: String, CaseIterable {
         case simpleThreshold = "Simple Threshold"
         case nearColorRich = "Near Color-Rich"
     }
 
-    static var extractionMode: ExtractionMode = .nearColorRich
+    static var extractionMode: ExtractionMode = .simpleThreshold
 
     static func inspect(url: URL, config: AnalysisConfig, roi: SpatialBounds3D?) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
@@ -268,7 +270,7 @@ enum USDZLoader {
         var totalSamples = 0
         var skippedNoUVTriangles = 0
         var materialRecords: [MaterialInspectionRecord] = []
-        var cachedSamples: [CachedCentroidSample] = []
+        var cachedSampleBins: [VoxelKey: CachedCentroidSample] = [:]
         var sourceBoundsAccumulator = BoundsAccumulator3D()
 
         for node in geometryNodes {
@@ -291,6 +293,10 @@ enum USDZLoader {
             for (elementIndex, element) in geometry.elements.enumerated() {
                 let material = geometry.materials[safe: elementIndex] ?? geometry.firstMaterial
                 let sampler = TextureSampler(material: material)
+                let fallbackSampler = fallbackTextureSampler(
+                    for: elementIndex,
+                    resolvedBaseColorTextureSamplers: resolvedBaseColorTextureSamplers
+                )
                 let indices = decodeIndices(element: element)
                 guard indices.count >= 3 else { continue }
 
@@ -319,69 +325,27 @@ enum USDZLoader {
                         }
                     }
 
-                    let centroidPosition = (worldPositions[i0] + worldPositions[i1] + worldPositions[i2]) / 3
-
-                    // 優先順位: 頂点色 > UV付き画像テクスチャ > フラット色 > 取得不可
-                    let sampledRGB: SIMD3<Float>?
-                    if hasVertexColor,
-                       i0 < vertexColors.count,
-                       i1 < vertexColors.count,
-                       i2 < vertexColors.count {
-                        sampledRGB = (vertexColors[i0] + vertexColors[i1] + vertexColors[i2]) / 3
-                    } else if sampler.hasImageTexture {
-                        if hasUV,
-                           i0 < uvs.count,
-                           i1 < uvs.count,
-                           i2 < uvs.count {
-                            let centroidUV = (uvs[i0] + uvs[i1] + uvs[i2]) / 3
-                            sampledRGB = sampler.sampleImage(at: centroidUV)
-                        } else {
-                            skippedNoUVTriangles += 1
-                            sampledRGB = nil
-                        }
-                    } else if hasUV,
-                              i0 < uvs.count,
-                              i1 < uvs.count,
-                              i2 < uvs.count {
-                        let fallbackSampler: TextureSampler?
-                        if resolvedBaseColorTextureSamplers.count == 1 {
-                            fallbackSampler = resolvedBaseColorTextureSamplers.first
-                        } else if elementIndex < resolvedBaseColorTextureSamplers.count {
-                            fallbackSampler = resolvedBaseColorTextureSamplers[elementIndex]
-                        } else {
-                            fallbackSampler = nil
-                        }
-
-                        if let fallbackSampler {
-                            let centroidUV = (uvs[i0] + uvs[i1] + uvs[i2]) / 3
-                            sampledRGB = fallbackSampler.sampleImage(at: centroidUV)
-                        } else if let flatColor = sampler.flatColor {
-                            sampledRGB = flatColor
-                        } else {
-                            sampledRGB = nil
-                        }
-                    } else if let flatColor = sampler.flatColor {
-                        sampledRGB = flatColor
-                    } else {
-                        sampledRGB = nil
+                    guard let representativeSample = sampleRepresentative(
+                        forTriangle: (i0, i1, i2),
+                        worldPositions: worldPositions,
+                        uvs: uvs,
+                        hasUV: hasUV,
+                        vertexColors: vertexColors,
+                        hasVertexColor: hasVertexColor,
+                        sampler: sampler,
+                        fallbackSampler: fallbackSampler,
+                        skippedNoUVTriangles: &skippedNoUVTriangles
+                    ) else {
+                        continue
                     }
-
-                    guard let rgb = sampledRGB else { continue }
 
                     sampledTriangleCount += 1
                     totalSamples += 1
-
-                    let hsv = hsvColor(from: rgb)
-                    if cachedSamples.count < maxCachedSamples {
-                        cachedSamples.append(
-                            CachedCentroidSample(
-                                worldPosition: Point3(centroidPosition),
-                                rgb: rgb,
-                                hsv: hsv
-                            )
-                        )
-                    }
-
+                    cacheSample(
+                        representativeSample,
+                        into: &cachedSampleBins,
+                        voxelSize: config.cacheVoxelSizeMeters
+                    )
                 }
 
                 let record = MaterialInspectionRecord(
@@ -392,7 +356,11 @@ enum USDZLoader {
                     hasVertexColor: hasVertexColor,
                     triangleCount: triangleCount,
                     sampledTriangleCount: sampledTriangleCount,
-                    textureSourceSummary: sampler.sourceSummary,
+                    textureSourceSummary: effectiveTextureSourceSummary(
+                        primarySampler: sampler,
+                        fallbackSampler: fallbackSampler,
+                        hasVertexColor: hasVertexColor
+                    ),
                     diffuseType: material?.diffuse.contents.map { String(describing: type(of: $0)) },
                     emissionType: material?.emission.contents.map { String(describing: type(of: $0)) },
                     multiplyType: material?.multiply.contents.map { String(describing: type(of: $0)) },
@@ -405,7 +373,18 @@ enum USDZLoader {
             }
         }
 
-        let colorRichSamples = cachedSamples.filter { $0.hsv.saturation >= 0.05 }
+        var cachedSamples = reduceCachedSamplesIfNeeded(
+            Array(cachedSampleBins.values),
+            targetCount: maxCachedSamples,
+            baseVoxelSize: config.cacheVoxelSizeMeters
+        )
+        cachedSamples.sort { lhs, rhs in
+            if lhs.worldPosition.x != rhs.worldPosition.x { return lhs.worldPosition.x < rhs.worldPosition.x }
+            if lhs.worldPosition.y != rhs.worldPosition.y { return lhs.worldPosition.y < rhs.worldPosition.y }
+            return lhs.worldPosition.z < rhs.worldPosition.z
+        }
+
+        let colorRichSamples = cachedSamples.filter { isStrongColorSeed(rgb: $0.rgb, hsv: $0.hsv, config: config) }
         let classifiedPoints = classifySamples(cachedSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
@@ -415,6 +394,9 @@ enum USDZLoader {
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
         var warnings: [String] = []
+        if cachedSamples.count < totalSamples {
+            warnings.append("sample cache縮約: raw=\(totalSamples), cached=\(cachedSamples.count)")
+        }
         if reducedBlue.count < config.minimumMaskPoints {
             warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(rawBlueCount), min=\(config.minimumMaskPoints)")
         }
@@ -570,8 +552,324 @@ enum USDZLoader {
 
         return samplers
     }
-    
-    
+
+    private struct TriangleRepresentativeSample {
+        let worldPosition: SIMD3<Float>
+        let rgb: SIMD3<Float>
+        let hsv: HSVColor
+
+        var colorfulnessScore: Float {
+            let metrics = USDZLoader.colorMetrics(from: rgb)
+            return (hsv.saturation * 1.6) + (metrics.chroma * 1.2) + (metrics.normalizedDominance * 0.9) + (hsv.value * 0.15)
+        }
+    }
+
+    private struct ColorMetrics {
+        let maxComponent: Float
+        let minComponent: Float
+        let secondComponent: Float
+        let chroma: Float
+        let normalizedDominance: Float
+        let redDominance: Float
+        let blueDominance: Float
+    }
+
+    private struct NeighborPointIndex {
+        private struct CellKey: Hashable {
+            let x: Int
+            let y: Int
+            let z: Int
+
+            init(point: SIMD3<Float>, cellSize: Float) {
+                let safeSize = max(cellSize, 0.000_001)
+                self.x = Int(floor(point.x / safeSize))
+                self.y = Int(floor(point.y / safeSize))
+                self.z = Int(floor(point.z / safeSize))
+            }
+
+            init(x: Int, y: Int, z: Int) {
+                self.x = x
+                self.y = y
+                self.z = z
+            }
+        }
+
+        let cellSize: Float
+        private let buckets: [CellKey: [SIMD3<Float>]]
+
+        init(points: [SIMD3<Float>], cellSize: Float) {
+            self.cellSize = max(cellSize, 0.00075)
+            var buckets: [CellKey: [SIMD3<Float>]] = [:]
+            buckets.reserveCapacity(points.count)
+            for point in points {
+                let key = CellKey(point: point, cellSize: self.cellSize)
+                buckets[key, default: []].append(point)
+            }
+            self.buckets = buckets
+        }
+
+        func containsPoint(near point: SIMD3<Float>, radius: Float) -> Bool {
+            let safeRadius = max(radius, 0.00075)
+            let radiusSquared = safeRadius * safeRadius
+            let centerKey = CellKey(point: point, cellSize: cellSize)
+            let range = max(1, Int(ceil(safeRadius / cellSize)))
+
+            for x in (centerKey.x - range)...(centerKey.x + range) {
+                for y in (centerKey.y - range)...(centerKey.y + range) {
+                    for z in (centerKey.z - range)...(centerKey.z + range) {
+                        guard let bucket = buckets[CellKey(x: x, y: y, z: z)] else { continue }
+                        for candidate in bucket where simd_distance_squared(candidate, point) <= radiusSquared {
+                            return true
+                        }
+                    }
+                }
+            }
+            return false
+        }
+    }
+
+    private static let representativeTriangleSampleWeights: [SIMD3<Float>] = [
+        SIMD3<Float>(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0),
+        SIMD3<Float>(0.60, 0.20, 0.20),
+        SIMD3<Float>(0.20, 0.60, 0.20),
+        SIMD3<Float>(0.20, 0.20, 0.60)
+    ]
+
+    private static func fallbackTextureSampler(for elementIndex: Int,
+                                               resolvedBaseColorTextureSamplers: [TextureSampler]) -> TextureSampler? {
+        _ = elementIndex
+        // SceneKit geometry.element の index と Model I/O submesh の順序は必ずしも一致しない。
+        // ここで無理に index 対応させると、別サブメッシュのテクスチャを誤サンプリングして
+        // 「灰色のどこかが赤/青に見える」原因になる。
+        // 安全に使えるのは単一テクスチャが明らかなケースだけに絞る。
+        return resolvedBaseColorTextureSamplers.count == 1 ? resolvedBaseColorTextureSamplers.first : nil
+    }
+
+    private static func effectiveTextureSourceSummary(primarySampler: TextureSampler,
+                                                      fallbackSampler: TextureSampler?,
+                                                      hasVertexColor: Bool) -> String {
+        if primarySampler.hasImageTexture {
+            return "sceneTexture:\(primarySampler.sourceSummary)"
+        }
+        if let fallbackSampler {
+            return "mdlBaseColor:\(fallbackSampler.sourceSummary)"
+        }
+        if hasVertexColor {
+            return "vertexColor"
+        }
+        if primarySampler.hasFlatColor {
+            return "flatColor"
+        }
+        return primarySampler.sourceSummary
+    }
+
+    private static func sampleRepresentative(
+        forTriangle triangle: (Int, Int, Int),
+        worldPositions: [SIMD3<Float>],
+        uvs: [SIMD2<Float>],
+        hasUV: Bool,
+        vertexColors: [SIMD3<Float>],
+        hasVertexColor: Bool,
+        sampler: TextureSampler,
+        fallbackSampler: TextureSampler?,
+        skippedNoUVTriangles: inout Int
+    ) -> CachedCentroidSample? {
+        let (i0, i1, i2) = triangle
+        let textureSampler = sampler.hasImageTexture ? sampler : fallbackSampler
+
+        if let textureSampler {
+            if hasUV,
+               i0 < uvs.count,
+               i1 < uvs.count,
+               i2 < uvs.count,
+               let texturedSample = texturedRepresentativeSample(
+                    positions: (worldPositions[i0], worldPositions[i1], worldPositions[i2]),
+                    uvs: (uvs[i0], uvs[i1], uvs[i2]),
+                    sampler: textureSampler
+               ) {
+                return CachedCentroidSample(
+                    worldPosition: Point3(texturedSample.worldPosition),
+                    rgb: texturedSample.rgb,
+                    hsv: texturedSample.hsv
+                )
+            }
+            if !hasUV || i0 >= uvs.count || i1 >= uvs.count || i2 >= uvs.count {
+                skippedNoUVTriangles += 1
+            }
+        }
+
+        if hasVertexColor,
+           i0 < vertexColors.count,
+           i1 < vertexColors.count,
+           i2 < vertexColors.count,
+           let vertexColorSample = vertexColorRepresentativeSample(
+                positions: (worldPositions[i0], worldPositions[i1], worldPositions[i2]),
+                colors: (vertexColors[i0], vertexColors[i1], vertexColors[i2])
+           ) {
+            return CachedCentroidSample(
+                worldPosition: Point3(vertexColorSample.worldPosition),
+                rgb: vertexColorSample.rgb,
+                hsv: vertexColorSample.hsv
+            )
+        }
+
+        if let flatColor = sampler.flatColor,
+           let flatColorSample = flatColorRepresentativeSample(
+                positions: (worldPositions[i0], worldPositions[i1], worldPositions[i2]),
+                rgb: flatColor
+           ) {
+            return CachedCentroidSample(
+                worldPosition: Point3(flatColorSample.worldPosition),
+                rgb: flatColorSample.rgb,
+                hsv: flatColorSample.hsv
+            )
+        }
+
+        return nil
+    }
+
+    private static func texturedRepresentativeSample(
+        positions: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>),
+        uvs: (SIMD2<Float>, SIMD2<Float>, SIMD2<Float>),
+        sampler: TextureSampler
+    ) -> TriangleRepresentativeSample? {
+        let (p0, p1, p2) = positions
+        let (uv0, uv1, uv2) = uvs
+        let candidates = representativeTriangleSampleWeights.compactMap { weights -> TriangleRepresentativeSample? in
+            let uv = interpolateVector2(weights: weights, v0: uv0, v1: uv1, v2: uv2)
+            guard let rgb = sampler.sampleImage(at: uv) else { return nil }
+            let worldPosition = interpolateVector3(weights: weights, v0: p0, v1: p1, v2: p2)
+            let hsv = hsvColor(from: rgb)
+            return TriangleRepresentativeSample(worldPosition: worldPosition, rgb: rgb, hsv: hsv)
+        }
+        return representativeSample(from: candidates)
+    }
+
+    private static func vertexColorRepresentativeSample(
+        positions: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>),
+        colors: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)
+    ) -> TriangleRepresentativeSample? {
+        let (p0, p1, p2) = positions
+        let (c0, c1, c2) = colors
+        let candidates = representativeTriangleSampleWeights.map { weights -> TriangleRepresentativeSample in
+            let rgb = interpolateVector3(weights: weights, v0: c0, v1: c1, v2: c2)
+            let worldPosition = interpolateVector3(weights: weights, v0: p0, v1: p1, v2: p2)
+            let hsv = hsvColor(from: rgb)
+            return TriangleRepresentativeSample(worldPosition: worldPosition, rgb: rgb, hsv: hsv)
+        }
+        return representativeSample(from: candidates)
+    }
+
+    private static func flatColorRepresentativeSample(
+        positions: (SIMD3<Float>, SIMD3<Float>, SIMD3<Float>),
+        rgb: SIMD3<Float>
+    ) -> TriangleRepresentativeSample? {
+        let centroidWeights = representativeTriangleSampleWeights[0]
+        let worldPosition = interpolateVector3(weights: centroidWeights, v0: positions.0, v1: positions.1, v2: positions.2)
+        let hsv = hsvColor(from: rgb)
+        return TriangleRepresentativeSample(worldPosition: worldPosition, rgb: rgb, hsv: hsv)
+    }
+
+    private static func representativeSample(from candidates: [TriangleRepresentativeSample]) -> TriangleRepresentativeSample? {
+        candidates.max { lhs, rhs in
+            lhs.colorfulnessScore < rhs.colorfulnessScore
+        }
+    }
+
+    private static func cacheSample(_ sample: CachedCentroidSample,
+                                    into bins: inout [VoxelKey: CachedCentroidSample],
+                                    voxelSize: Float) {
+        let key = VoxelKey(sample.worldPosition.simd, size: max(voxelSize, 0.00075))
+        if let existing = bins[key] {
+            if cachedSampleRetentionPriority(sample) >= cachedSampleRetentionPriority(existing) {
+                bins[key] = sample
+            }
+        } else {
+            bins[key] = sample
+        }
+    }
+
+    private static func reduceCachedSamplesIfNeeded(_ samples: [CachedCentroidSample],
+                                                    targetCount: Int,
+                                                    baseVoxelSize: Float) -> [CachedCentroidSample] {
+        guard samples.count > targetCount else { return samples }
+
+        var reduced = samples
+        var voxelSize = max(baseVoxelSize * 1.15, 0.0009)
+        while reduced.count > targetCount {
+            var bins: [VoxelKey: CachedCentroidSample] = [:]
+            bins.reserveCapacity(reduced.count)
+            for sample in reduced {
+                cacheSample(sample, into: &bins, voxelSize: voxelSize)
+            }
+            let nextReduced = Array(bins.values)
+            if nextReduced.count == reduced.count {
+                voxelSize *= 1.35
+            } else {
+                reduced = nextReduced
+                voxelSize *= 1.15
+            }
+        }
+        return reduced
+    }
+
+    private static func cachedSampleRetentionPriority(_ sample: CachedCentroidSample) -> Float {
+        (sample.hsv.saturation * 1.6) + (sample.chroma * 1.2) + (sample.normalizedDominance * 0.9) + (sample.hsv.value * 0.15)
+    }
+
+    private static func interpolateVector3(weights: SIMD3<Float>,
+                                           v0: SIMD3<Float>,
+                                           v1: SIMD3<Float>,
+                                           v2: SIMD3<Float>) -> SIMD3<Float> {
+        (v0 * weights.x) + (v1 * weights.y) + (v2 * weights.z)
+    }
+
+    private static func interpolateVector2(weights: SIMD3<Float>,
+                                           v0: SIMD2<Float>,
+                                           v1: SIMD2<Float>,
+                                           v2: SIMD2<Float>) -> SIMD2<Float> {
+        (v0 * weights.x) + (v1 * weights.y) + (v2 * weights.z)
+    }
+
+    private static func colorMetrics(from rgb: SIMD3<Float>) -> ColorMetrics {
+        let maximum = max(rgb.x, max(rgb.y, rgb.z))
+        let minimum = min(rgb.x, min(rgb.y, rgb.z))
+        let second = max(min(rgb.x, rgb.y), min(max(rgb.x, rgb.y), rgb.z))
+        let chroma = maximum - minimum
+        let normalizedDominance = maximum > 0 ? (maximum - second) / maximum : 0
+        return ColorMetrics(
+            maxComponent: maximum,
+            minComponent: minimum,
+            secondComponent: second,
+            chroma: chroma,
+            normalizedDominance: normalizedDominance,
+            redDominance: rgb.x - max(rgb.y, rgb.z),
+            blueDominance: rgb.z - max(rgb.x, rgb.y)
+        )
+    }
+
+    private static func isStrongColorSeed(rgb: SIMD3<Float>, hsv: HSVColor, config: AnalysisConfig) -> Bool {
+        let metrics = colorMetrics(from: rgb)
+        guard hsv.saturation >= max(config.minSaturation * 0.7, 0.24),
+              hsv.value >= max(config.minValue * 0.9, 0.12),
+              metrics.chroma >= max(config.minChroma * 0.9, 0.09),
+              metrics.normalizedDominance >= max(config.minDominance * 0.8, 0.08) else {
+            return false
+        }
+
+        if config.blueHueRange.contains(hsv.hue),
+           metrics.blueDominance >= max(config.minChroma * 0.35, 0.05) {
+            return true
+        }
+
+        if config.redHueRanges.contains(where: { $0.contains(hsv.hue) }),
+           metrics.redDominance >= max(config.minChroma * 0.35, 0.05) {
+            return true
+        }
+
+        return false
+    }
+
     private static func summarizeCachedSamples(_ samples: [CachedCentroidSample]) -> (
         meanR: Float,
         meanG: Float,
@@ -652,7 +950,7 @@ enum USDZLoader {
             if saturation >= 0.10 { saturationAtLeast010 += 1 }
             if value >= 0.20 { valueAtLeast020 += 1 }
 
-            switch classify(hsv: sample.hsv, config: config) {
+            switch classify(rgb: sample.rgb, hsv: sample.hsv, config: config) {
             case .blue:
                 blueRuleCount += 1
             case .red:
@@ -695,7 +993,7 @@ enum USDZLoader {
         print("[HSV.debug.colorRich] colorRichCount=\(colorRichCount)")
 
         guard colorRichCount > 0 else {
-            print("[HSV.debug.colorRich] No color-rich samples (saturation >= 0.05)")
+            print("[HSV.debug.colorRich] No strong-color seed samples")
             return
         }
 
@@ -708,7 +1006,7 @@ enum USDZLoader {
             let binIndex = min(11, Int(normalizedHue / 30))
             colorRichHueHistogram[binIndex] += 1
 
-            switch classify(hsv: sample.hsv, config: config) {
+            switch classify(rgb: sample.rgb, hsv: sample.hsv, config: config) {
             case .blue:
                 colorRichBlueRuleCount += 1
             case .red:
@@ -768,7 +1066,7 @@ enum USDZLoader {
         var redPoints: [SIMD3<Float>] = []
 
         for sample in samples {
-            switch classify(hsv: sample.hsv, config: config) {
+            switch classify(rgb: sample.rgb, hsv: sample.hsv, config: config) {
             case .blue:
                 bluePoints.append(sample.worldPosition.simd)
             case .red:
@@ -785,7 +1083,7 @@ enum USDZLoader {
         _ samples: [CachedCentroidSample],
         config: AnalysisConfig
     ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], candidateCount: Int, blueCount: Int, redCount: Int) {
-        let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
+        let colorRichSamples = samples.filter { isStrongColorSeed(rgb: $0.rgb, hsv: $0.hsv, config: config) }
         let diagnostics = nearColorRichDiagnostics(samples, colorRichSamples: colorRichSamples, config: config)
         var bluePoints: [SIMD3<Float>] = []
         var redPoints: [SIMD3<Float>] = []
@@ -794,7 +1092,7 @@ enum USDZLoader {
 
         for (sample, isNearColorRich) in zip(samples, diagnostics.nearColorRichFlags) {
             guard isNearColorRich else { continue }
-            switch classify(hsv: sample.hsv, config: config) {
+            switch classify(rgb: sample.rgb, hsv: sample.hsv, config: config) {
             case .blue:
                 bluePoints.append(sample.worldPosition.simd)
             case .red:
@@ -812,11 +1110,16 @@ enum USDZLoader {
         colorRichSamples: [CachedCentroidSample],
         config: AnalysisConfig
     ) -> (nearColorRichFlags: [Bool], candidateNearColorRichCount: Int, blueRuleCount: Int, redRuleCount: Int) {
+        _ = config
         guard !colorRichSamples.isEmpty else {
             return ([Bool](repeating: false, count: samples.count), 0, 0, 0)
         }
 
-        let radiusSquared = nearColorRichRadiusMeters * nearColorRichRadiusMeters
+        let radius = nearColorRichRadiusMeters
+        let neighborIndex = NeighborPointIndex(
+            points: colorRichSamples.map { $0.worldPosition.simd },
+            cellSize: max(radius, 0.001)
+        )
         var nearColorRichFlags = [Bool](repeating: false, count: samples.count)
         var candidateNearColorRichCount = 0
         var blueRuleCount = 0
@@ -824,15 +1127,13 @@ enum USDZLoader {
 
         for (index, sample) in samples.enumerated() {
             let samplePosition = sample.worldPosition.simd
-            let isNearColorRich = colorRichSamples.contains { colorRichSample in
-                simd_distance_squared(samplePosition, colorRichSample.worldPosition.simd) <= radiusSquared
-            }
+            let isNearColorRich = neighborIndex.containsPoint(near: samplePosition, radius: radius)
 
             guard isNearColorRich else { continue }
             nearColorRichFlags[index] = true
             candidateNearColorRichCount += 1
 
-            switch classify(hsv: sample.hsv, config: config) {
+            switch classify(rgb: sample.rgb, hsv: sample.hsv, config: config) {
             case .blue:
                 blueRuleCount += 1
             case .red:
@@ -878,16 +1179,22 @@ enum USDZLoader {
         }
     }
 
-    private static func classify(hsv: HSVColor, config: AnalysisConfig) -> MaskColor {
-        guard hsv.saturation >= config.minSaturation, hsv.value >= config.minValue else {
+    private static func classify(rgb: SIMD3<Float>, hsv: HSVColor, config: AnalysisConfig) -> MaskColor {
+        let metrics = colorMetrics(from: rgb)
+        guard hsv.saturation >= config.minSaturation,
+              hsv.value >= config.minValue,
+              metrics.chroma >= config.minChroma,
+              metrics.normalizedDominance >= config.minDominance else {
             return .other
         }
 
-        if config.blueHueRange.contains(hsv.hue) {
+        if config.blueHueRange.contains(hsv.hue),
+           metrics.blueDominance >= max(config.minChroma * 0.40, 0.05) {
             return .blue
         }
 
-        if config.redHueRanges.contains(where: { $0.contains(hsv.hue) }) {
+        if config.redHueRanges.contains(where: { $0.contains(hsv.hue) }),
+           metrics.redDominance >= max(config.minChroma * 0.40, 0.05) {
             return .red
         }
 

@@ -20,6 +20,8 @@ struct DebugInspectorView: View {
     @State private var autoApplyROI = false
     @State private var lastDelta: ROIReinspectDelta?
     @State private var autoApplyTask: Task<Void, Never>?
+    @State private var inspectorRefreshTask: Task<Void, Never>?
+    @State private var roiPreviewRefreshTask: Task<Void, Never>?
     @State private var isBrushEditing = false
     @State private var brushMode: BrushPaintMode = .add
     @State private var brushInteractionMode: InteractiveSceneKitView.BrushInteractionMode = .paint
@@ -94,6 +96,7 @@ struct DebugInspectorView: View {
             .onDisappear {
                 autoApplyTask?.cancel()
                 autoApplyTask = nil
+                cancelScheduledSceneRefreshes()
             }
     }
 
@@ -319,6 +322,8 @@ struct DebugInspectorView: View {
             sliderRow(label: "Red High Min", value: $appModel.config.redHueHighMin, range: 240 ... 360)
             sliderRow(label: "Min Saturation", value: $appModel.config.minSaturation, range: 0 ... 1)
             sliderRow(label: "Min Value", value: $appModel.config.minValue, range: 0 ... 1)
+            sliderRow(label: "Min Chroma", value: $appModel.config.minChroma, range: 0 ... 1)
+            sliderRow(label: "Min Dominance", value: $appModel.config.minDominance, range: 0 ... 1)
         }
     }
 
@@ -672,6 +677,41 @@ struct DebugInspectorView: View {
         }
     }
 
+    private func cancelScheduledSceneRefreshes() {
+        inspectorRefreshTask?.cancel()
+        inspectorRefreshTask = nil
+        roiPreviewRefreshTask?.cancel()
+        roiPreviewRefreshTask = nil
+    }
+
+    private func scheduleInspectorSceneRefresh(delayNanoseconds: UInt64 = 45_000_000) {
+        inspectorRefreshTask?.cancel()
+        inspectorRefreshTask = Task {
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                refreshInspectorScene()
+                inspectorRefreshTask = nil
+            }
+        }
+    }
+
+    private func scheduleROIPreviewSceneRefresh(delayNanoseconds: UInt64 = 55_000_000) {
+        roiPreviewRefreshTask?.cancel()
+        roiPreviewRefreshTask = Task {
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                refreshROIPreviewScene()
+                roiPreviewRefreshTask = nil
+            }
+        }
+    }
+
     private func refreshInspectorScene() {
         do {
             let sourceInput = kind == .new ? appModel.newInput : appModel.usedInput
@@ -836,6 +876,15 @@ struct DebugInspectorView: View {
         comparisonRegionPreview = appModel.previewComparisonBrush(kind: kind)
     }
 
+    private func resolvedBrushCenter(from point: Point3, radiusMeters: Float) -> Point3 {
+        let snapRadius = max(radiusMeters * 0.85, 0.0015)
+        return CropBrushEngine.nearestSamplePosition(
+            to: point,
+            in: currentInput.package.cachedSamples,
+            within: snapRadius
+        ) ?? point
+    }
+
     private func addBrushStamp(at point: Point3) {
         if activeBrushEditor == .manualRegion {
             addManualRegionBrushStamp(at: point)
@@ -844,7 +893,8 @@ struct DebugInspectorView: View {
         var brush = currentInput.cropBrush ?? CropBrushState.default
         brush.radiusMeters = brushRadiusMeters
         brush.autoROIMarginMeters = brushAutoROIMarginMeters
-        let newStamp = BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: brushMode)
+        let snappedCenter = resolvedBrushCenter(from: point, radiusMeters: brushRadiusMeters)
+        let newStamp = BrushStamp3D(center: snappedCenter, radiusMeters: brushRadiusMeters, mode: brushMode)
         brush.stamps.append(newStamp)
         appModel.setCropBrush(kind: kind, brush: brush)
         latestBrushStamp = newStamp
@@ -855,15 +905,16 @@ struct DebugInspectorView: View {
             }
         }
         refreshCropBrushPreview()
-        refreshInspectorScene()
-        refreshROIPreviewScene()
+        scheduleInspectorSceneRefresh()
+        scheduleROIPreviewSceneRefresh()
     }
 
     private func addManualRegionBrushStamp(at point: Point3) {
         var brush = currentManualRegionBrush() ?? ManualRegionBrushState.default
         brush.radiusMeters = manualRegionBrushRadiusMeters
         brush.isEnabled = true
-        let newStamp = BrushStamp3D(center: point, radiusMeters: manualRegionBrushRadiusMeters, mode: brushMode)
+        let snappedCenter = resolvedBrushCenter(from: point, radiusMeters: manualRegionBrushRadiusMeters)
+        let newStamp = BrushStamp3D(center: snappedCenter, radiusMeters: manualRegionBrushRadiusMeters, mode: brushMode)
         brush.stamps.append(newStamp)
         persistManualRegionBrush(brush)
         latestBrushStamp = newStamp
@@ -874,7 +925,7 @@ struct DebugInspectorView: View {
             }
         }
         refreshManualRegionPreviews()
-        refreshInspectorScene()
+        scheduleInspectorSceneRefresh()
     }
 
     private func updateActiveBrushRadius(_ radius: Float) {

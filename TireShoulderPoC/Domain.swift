@@ -157,6 +157,26 @@ struct CachedCentroidSample: Identifiable, Sendable {
     let worldPosition: Point3
     let rgb: SIMD3<Float>
     let hsv: HSVColor
+
+    var chroma: Float {
+        let maximum = max(rgb.x, max(rgb.y, rgb.z))
+        let minimum = min(rgb.x, min(rgb.y, rgb.z))
+        return maximum - minimum
+    }
+
+    var normalizedDominance: Float {
+        let maximum = max(rgb.x, max(rgb.y, rgb.z))
+        let second = max(min(rgb.x, rgb.y), min(max(rgb.x, rgb.y), rgb.z))
+        guard maximum > 0 else { return 0 }
+        return (maximum - second) / maximum
+    }
+
+    var isPreviewColorRich: Bool {
+        hsv.saturation >= 0.20 &&
+        hsv.value >= 0.10 &&
+        chroma >= 0.08 &&
+        normalizedDominance >= 0.05
+    }
 }
 
 enum BrushPaintMode: String, CaseIterable, Hashable, Sendable {
@@ -279,7 +299,7 @@ struct LoadedModelPackage: Sendable {
     let cachedSamples: [CachedCentroidSample]
     let sourceBounds: SpatialBounds3D
     var sampledPoints: [Point3] { cachedSamples.map(\.worldPosition) }
-    var colorRichPoints: [Point3] { cachedSamples.filter { $0.hsv.saturation >= 0.05 }.map(\.worldPosition) }
+    var colorRichPoints: [Point3] { cachedSamples.filter(\.isPreviewColorRich).map(\.worldPosition) }
     let meanR: Float
     let meanG: Float
     let meanB: Float
@@ -358,13 +378,16 @@ struct ComparisonResult: Sendable {
 }
 
 struct AnalysisConfig: Sendable {
-    var blueHueRange: ClosedRange<Float> = 170 ... 270
-    var redHueLowMax: Float = 30
-    var redHueHighMin: Float = 330
+    var blueHueRange: ClosedRange<Float> = 200 ... 250
+    var redHueLowMax: Float = 18
+    var redHueHighMin: Float = 345
 
-    var minSaturation: Float = 0.08
-    var minValue: Float = 0.05
+    var minSaturation: Float = 0.35
+    var minValue: Float = 0.15
+    var minChroma: Float = 0.12
+    var minDominance: Float = 0.10
 
+    var cacheVoxelSizeMeters: Float = 0.0012
     var maskVoxelSizeMeters: Float = 0.0015
     var profileVoxelSizeMeters: Float = 0.0015
 
