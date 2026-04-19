@@ -501,6 +501,51 @@ enum USDZLoader {
         )
     }
 
+    static func selectedSamples(from samples: [CachedCentroidSample], brush: CropBrushState) -> [CachedCentroidSample] {
+        guard !samples.isEmpty, !brush.stamps.isEmpty else { return [] }
+
+        // MVP: 永続マスクではなく「最後に塗られた状態」を採用する単純ルール。
+        var selectedFlags = [Bool](repeating: false, count: samples.count)
+
+        for stamp in brush.stamps {
+            let radius = max(0, stamp.radiusMeters)
+            let radiusSquared = radius * radius
+            guard radiusSquared > 0 else { continue }
+            let center = stamp.center.simd
+
+            for (index, sample) in samples.enumerated() {
+                let delta = sample.worldPosition.simd - center
+                let distanceSquared = simd_length_squared(delta)
+                guard distanceSquared <= radiusSquared else { continue }
+                selectedFlags[index] = (stamp.mode == .add)
+            }
+        }
+
+        return samples.enumerated().compactMap { index, sample in
+            selectedFlags[index] ? sample : nil
+        }
+    }
+
+    static func autoROI(from selected: [CachedCentroidSample], marginMeters: Float) -> SpatialBounds3D? {
+        guard let sampleBounds = SpatialBounds3D(points: selected.map { $0.worldPosition.simd }) else {
+            return nil
+        }
+
+        // Brushは表面上の点選択なので、再inspectへ渡すAABBは少し余白を持たせる。
+        let margin = max(0, marginMeters)
+        let expandedMin = Point3(
+            x: sampleBounds.min.x - margin,
+            y: sampleBounds.min.y - margin,
+            z: sampleBounds.min.z - margin
+        )
+        let expandedMax = Point3(
+            x: sampleBounds.max.x + margin,
+            y: sampleBounds.max.y + margin,
+            z: sampleBounds.max.z + margin
+        )
+        return SpatialBounds3D(min: expandedMin, max: expandedMax)
+    }
+
     private static func inspectModelIOMaterials(url: URL) -> [ModelIOMaterialInspectionRecord] {
         let asset = MDLAsset(url: url)
         asset.loadTextures()

@@ -51,7 +51,9 @@ enum SceneOverlayBuilder {
                                    showROIBounds: Bool,
                                    focusMode: InspectorFocusMode,
                                    pendingROI: SpatialBounds3D? = nil,
-                                   appliedROI: SpatialBounds3D? = nil) throws -> SCNScene {
+                                   appliedROI: SpatialBounds3D? = nil,
+                                   brushSelectedPoints: [Point3] = [],
+                                   brushAutoROI: SpatialBounds3D? = nil) throws -> SCNScene {
         let rawScene: SCNScene
         do {
             rawScene = try SCNScene(url: modelURL, options: nil)
@@ -62,6 +64,7 @@ enum SceneOverlayBuilder {
         let scene = SCNScene()
         scene.background.contents = UIColor(white: 0.07, alpha: 1.0)
         let rawContainer = SCNNode()
+        rawContainer.name = "RawMeshContainer"
         cloneChildren(from: rawScene.rootNode, to: rawContainer)
         // モードごとに「元メッシュ」と「点群」の主役を切り替える。
         let meshOpacity: CGFloat
@@ -136,6 +139,21 @@ enum SceneOverlayBuilder {
                 pendingNode.opacity = 0.90
                 scene.rootNode.addChildNode(pendingNode)
             }
+            if let brushAutoROI {
+                let brushNode = aabbWireframeNode(bounds: brushAutoROI, color: .systemTeal, thickness: 0.0004)
+                brushNode.name = "BrushAutoROI"
+                scene.rootNode.addChildNode(brushNode)
+            }
+        }
+
+        if !brushSelectedPoints.isEmpty {
+            scene.rootNode.addChildNode(
+                pointCloudNode(
+                    points: brushSelectedPoints.map(\.simd),
+                    color: .cyan,
+                    pointRadius: 0.00068
+                )
+            )
         }
 
         if renderMode == .maskLocator {

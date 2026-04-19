@@ -33,6 +33,13 @@ enum InspectorFocusMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum BrushPaintMode: String, CaseIterable, Identifiable, Sendable {
+    case add = "Add"
+    case erase = "Erase"
+
+    var id: String { rawValue }
+}
+
 struct Point3: Hashable, Sendable {
     var x: Float
     var y: Float
@@ -119,6 +126,32 @@ struct CachedCentroidSample: Identifiable, Sendable {
     let hsv: HSVColor
 }
 
+struct BrushStamp3D: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let center: Point3
+    let radiusMeters: Float
+    let mode: BrushPaintMode
+
+    init(id: UUID = UUID(), center: Point3, radiusMeters: Float, mode: BrushPaintMode) {
+        self.id = id
+        self.center = center
+        self.radiusMeters = radiusMeters
+        self.mode = mode
+    }
+}
+
+struct CropBrushState: Sendable {
+    var stamps: [BrushStamp3D]
+    var radiusMeters: Float
+    var autoROIMarginMeters: Float
+
+    static let `default` = CropBrushState(
+        stamps: [],
+        radiusMeters: 0.005,
+        autoROIMarginMeters: 0.003
+    )
+}
+
 struct MaterialInspectionRecord: Identifiable, Sendable {
     let id = UUID()
     let nodeName: String
@@ -201,6 +234,7 @@ struct ModelInput {
     let kind: ModelKind
     let fileURL: URL
     var roi: SpatialBounds3D?
+    var cropBrush: CropBrushState?
     var package: LoadedModelPackage
 }
 

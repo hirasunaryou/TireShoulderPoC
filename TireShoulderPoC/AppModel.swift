@@ -24,6 +24,12 @@ struct ROIReinspectDelta: Sendable {
     }
 }
 
+struct CropBrushPreview: Sendable {
+    let selectedSampleCount: Int
+    let autoROI: SpatialBounds3D?
+    let selectedPoints: [Point3]
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var newInput: ModelInput?
@@ -63,7 +69,7 @@ final class AppModel: ObservableObject {
                 try USDZLoader.inspect(url: localURL, config: config, roi: nil)
             }.value
 
-            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, package: package)
+            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, cropBrush: nil, package: package)
 
             switch kind {
             case .new:
@@ -102,6 +108,35 @@ final class AppModel: ObservableObject {
         guard var input = modelInput(for: kind) else { return }
         input.roi = roi
         setModelInput(input, for: kind)
+    }
+
+    func setCropBrush(kind: ModelKind, brush: CropBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.cropBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func clearCropBrush(kind: ModelKind) {
+        setCropBrush(kind: kind, brush: nil)
+    }
+
+    func previewCropBrushSelection(kind: ModelKind) -> CropBrushPreview? {
+        guard let input = modelInput(for: kind), let brush = input.cropBrush else { return nil }
+        let selected = USDZLoader.selectedSamples(from: input.package.cachedSamples, brush: brush)
+        let autoROI = USDZLoader.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
+        return CropBrushPreview(
+            selectedSampleCount: selected.count,
+            autoROI: autoROI,
+            selectedPoints: selected.map(\.worldPosition)
+        )
+    }
+
+    func applyCropBrushAsROI(kind: ModelKind, reason: String = "Crop Brushを適用") async -> ROIReinspectDelta? {
+        guard let input = modelInput(for: kind), let brush = input.cropBrush else { return nil }
+        let selected = USDZLoader.selectedSamples(from: input.package.cachedSamples, brush: brush)
+        let autoROI = USDZLoader.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
+        setROI(kind: kind, roi: autoROI)
+        return await reinspectModel(kind: kind, reason: reason)
     }
 
     /// ROI変更時はこちらを使ってUSDZ全体を再inspectする。
