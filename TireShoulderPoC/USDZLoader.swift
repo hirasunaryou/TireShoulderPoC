@@ -501,46 +501,6 @@ enum USDZLoader {
         )
     }
 
-    static func selectedSamples(from samples: [CachedCentroidSample], brush: CropBrushState) -> [CachedCentroidSample] {
-        guard !samples.isEmpty, !brush.stamps.isEmpty else { return [] }
-
-        var selectedIDs = Set<UUID>()
-        for stamp in brush.stamps {
-            let radiusSquared = stamp.radiusMeters * stamp.radiusMeters
-            for sample in samples {
-                let distanceSquared = simd_length_squared(sample.worldPosition.simd - stamp.center.simd)
-                guard distanceSquared <= radiusSquared else { continue }
-                switch stamp.mode {
-                case .add:
-                    selectedIDs.insert(sample.id)
-                case .erase:
-                    selectedIDs.remove(sample.id)
-                }
-            }
-        }
-
-        return samples.filter { selectedIDs.contains($0.id) }
-    }
-
-    static func autoROI(from selected: [CachedCentroidSample], marginMeters: Float) -> SpatialBounds3D? {
-        guard !selected.isEmpty else { return nil }
-        let points = selected.map { $0.worldPosition.simd }
-        guard let bounds = SpatialBounds3D(points: points) else { return nil }
-        let margin = max(0, marginMeters)
-        return SpatialBounds3D(
-            min: Point3(
-                x: bounds.min.x - margin,
-                y: bounds.min.y - margin,
-                z: bounds.min.z - margin
-            ),
-            max: Point3(
-                x: bounds.max.x + margin,
-                y: bounds.max.y + margin,
-                z: bounds.max.z + margin
-            )
-        )
-    }
-
     private static func inspectModelIOMaterials(url: URL) -> [ModelIOMaterialInspectionRecord] {
         let asset = MDLAsset(url: url)
         asset.loadTextures()
