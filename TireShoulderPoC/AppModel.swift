@@ -63,7 +63,15 @@ final class AppModel: ObservableObject {
                 try USDZLoader.inspect(url: localURL, config: config, roi: nil)
             }.value
 
-            let input = ModelInput(kind: kind, fileURL: localURL, roi: nil, cropBrush: nil, package: package)
+            let input = ModelInput(
+                kind: kind,
+                fileURL: localURL,
+                roi: nil,
+                cropBrush: nil,
+                alignmentBrush: nil,
+                comparisonBrush: nil,
+                package: package
+            )
 
             switch kind {
             case .new:
@@ -104,6 +112,46 @@ final class AppModel: ObservableObject {
 
     func clearCropBrush(kind: ModelKind) {
         setCropBrush(kind: kind, brush: nil)
+    }
+
+    func setAlignmentBrush(kind: ModelKind, brush: ManualRegionBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.alignmentBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func setComparisonBrush(kind: ModelKind, brush: ManualRegionBrushState?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.comparisonBrush = brush
+        setModelInput(input, for: kind)
+    }
+
+    func clearAlignmentBrush(kind: ModelKind) {
+        setAlignmentBrush(kind: kind, brush: nil)
+    }
+
+    func clearComparisonBrush(kind: ModelKind) {
+        setComparisonBrush(kind: kind, brush: nil)
+    }
+
+    func previewAlignmentBrush(kind: ModelKind) -> ManualRegionPreview? {
+        guard let input = modelInput(for: kind) else { return nil }
+        return CropBrushEngine.makeManualRegionPreview(
+            samples: input.package.cachedSamples,
+            bluePoints: input.package.bluePoints,
+            redPoints: input.package.redPoints,
+            brush: input.alignmentBrush
+        )
+    }
+
+    func previewComparisonBrush(kind: ModelKind) -> ManualRegionPreview? {
+        guard let input = modelInput(for: kind) else { return nil }
+        return CropBrushEngine.makeManualRegionPreview(
+            samples: input.package.cachedSamples,
+            bluePoints: input.package.bluePoints,
+            redPoints: input.package.redPoints,
+            brush: input.comparisonBrush
+        )
     }
 
     func previewCropBrushSelection(kind: ModelKind) -> CropBrushPreview? {
@@ -170,11 +218,6 @@ final class AppModel: ObservableObject {
             return
         }
 
-        guard canCompare else {
-            errorMessage = "比較には青/赤ともに最低 \(config.minimumMaskPoints) 点が必要です。まずデバッグしきい値を調整してください。"
-            return
-        }
-
         isBusy = true
         errorMessage = nil
         exportedCSVURL = nil
@@ -182,8 +225,9 @@ final class AppModel: ObservableObject {
 
         do {
             let config = self.config
-            let newPackage = newInput.package
-            let usedPackage = usedInput.package
+            let effective = try makeEffectiveComparisonPackages(newInput: newInput, usedInput: usedInput)
+            let newPackage = effective.newPackage
+            let usedPackage = effective.usedPackage
             let newURL = newInput.fileURL
             let usedURL = usedInput.fileURL
 
@@ -240,6 +284,107 @@ final class AppModel: ObservableObject {
             line += "（警告 \(package.warnings.count) 件）"
         }
         return line
+    }
+
+    private func makeEffectiveComparisonPackages(newInput: ModelInput,
+                                                 usedInput: ModelInput) throws -> (newPackage: LoadedModelPackage, usedPackage: LoadedModelPackage) {
+        let minPoints = config.minimumMaskPoints
+
+        let hasNewAlignment = hasManualRegion(newInput.alignmentBrush)
+        let hasUsedAlignment = hasManualRegion(usedInput.alignmentBrush)
+        if hasNewAlignment != hasUsedAlignment {
+            throw PoCError.alignmentFailed("Alignment Region は新品/走行品の両方で指定してください。")
+        }
+
+        let hasNewComparison = hasManualRegion(newInput.comparisonBrush)
+        let hasUsedComparison = hasManualRegion(usedInput.comparisonBrush)
+        if hasNewComparison != hasUsedComparison {
+            throw PoCError.profileFailed("Comparison Region は新品/走行品の両方で指定してください。")
+        }
+
+        var gatedNewBlue = newInput.package.bluePoints
+        var gatedUsedBlue = usedInput.package.bluePoints
+        var gatedNewRed = newInput.package.redPoints
+        var gatedUsedRed = usedInput.package.redPoints
+
+        if hasNewAlignment && hasUsedAlignment {
+            let newSelected = CropBrushEngine.selectedSamples(
+                from: newInput.package.cachedSamples,
+                manualRegion: newInput.alignmentBrush ?? .default
+            )
+            let usedSelected = CropBrushEngine.selectedSamples(
+                from: usedInput.package.cachedSamples,
+                manualRegion: usedInput.alignmentBrush ?? .default
+            )
+            gatedNewBlue = CropBrushEngine.gate(points: newInput.package.bluePoints, by: newSelected)
+            gatedUsedBlue = CropBrushEngine.gate(points: usedInput.package.bluePoints, by: usedSelected)
+            guard gatedNewBlue.count >= minPoints, gatedUsedBlue.count >= minPoints else {
+                throw PoCError.alignmentFailed("Alignment Region 適用後の青点が不足しています（新品 \(gatedNewBlue.count) / 走行品 \(gatedUsedBlue.count), 最低 \(minPoints)）。")
+            }
+        }
+
+        if hasNewComparison && hasUsedComparison {
+            let newSelected = CropBrushEngine.selectedSamples(
+                from: newInput.package.cachedSamples,
+                manualRegion: newInput.comparisonBrush ?? .default
+            )
+            let usedSelected = CropBrushEngine.selectedSamples(
+                from: usedInput.package.cachedSamples,
+                manualRegion: usedInput.comparisonBrush ?? .default
+            )
+            gatedNewRed = CropBrushEngine.gate(points: newInput.package.redPoints, by: newSelected)
+            gatedUsedRed = CropBrushEngine.gate(points: usedInput.package.redPoints, by: usedSelected)
+            guard gatedNewRed.count >= minPoints, gatedUsedRed.count >= minPoints else {
+                throw PoCError.profileFailed("Comparison Region 適用後の赤点が不足しています（新品 \(gatedNewRed.count) / 走行品 \(gatedUsedRed.count), 最低 \(minPoints)）。")
+            }
+        }
+
+        guard gatedNewBlue.count >= minPoints,
+              gatedUsedBlue.count >= minPoints,
+              gatedNewRed.count >= minPoints,
+              gatedUsedRed.count >= minPoints else {
+            throw PoCError.profileFailed("比較には青/赤ともに最低 \(minPoints) 点が必要です。まずデバッグしきい値またはブラシ領域を調整してください。")
+        }
+
+        return (
+            newPackage: packageByReplacingMaskPoints(base: newInput.package, bluePoints: gatedNewBlue, redPoints: gatedNewRed),
+            usedPackage: packageByReplacingMaskPoints(base: usedInput.package, bluePoints: gatedUsedBlue, redPoints: gatedUsedRed)
+        )
+    }
+
+    private func hasManualRegion(_ brush: ManualRegionBrushState?) -> Bool {
+        guard let brush else { return false }
+        return brush.isEnabled && !brush.stamps.isEmpty
+    }
+
+    private func packageByReplacingMaskPoints(base: LoadedModelPackage,
+                                              bluePoints: [Point3],
+                                              redPoints: [Point3]) -> LoadedModelPackage {
+        LoadedModelPackage(
+            displayName: base.displayName,
+            bluePoints: bluePoints,
+            redPoints: redPoints,
+            geometryNodeCount: base.geometryNodeCount,
+            totalSamples: base.totalSamples,
+            rawBlueCount: base.rawBlueCount,
+            rawRedCount: base.rawRedCount,
+            skippedNoUVTriangles: base.skippedNoUVTriangles,
+            materialRecords: base.materialRecords,
+            modelIOMaterialRecords: base.modelIOMaterialRecords,
+            cachedSamples: base.cachedSamples,
+            sourceBounds: base.sourceBounds,
+            meanR: base.meanR,
+            meanG: base.meanG,
+            meanB: base.meanB,
+            meanHue: base.meanHue,
+            meanSaturation: base.meanSaturation,
+            meanValue: base.meanValue,
+            minSaturationObserved: base.minSaturationObserved,
+            maxSaturationObserved: base.maxSaturationObserved,
+            minValueObserved: base.minValueObserved,
+            maxValueObserved: base.maxValueObserved,
+            warnings: base.warnings
+        )
     }
 
     private func modelInput(for kind: ModelKind) -> ModelInput? {
