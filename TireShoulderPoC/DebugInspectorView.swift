@@ -30,7 +30,9 @@ struct DebugInspectorView: View {
     @State private var roiNormMaxZ: Float = 1
 
     var body: some View {
-        lifecycleBound(
+        bindAutoApplyLifecycle(
+            bindROILifecycle(
+                bindSceneLifecycle(
             GroupBox("\(kind.rawValue) Debug Inspector") {
                 VStack(alignment: .leading, spacing: 10) {
                     inspectorViewport
@@ -45,17 +47,19 @@ struct DebugInspectorView: View {
                     materialRecordSection
                 }
             }
+                )
+            )
         )
     }
 
-    /// 大きなView式を分割し、SwiftUIの型推論負荷を下げるためのラッパー。
-    private func lifecycleBound<Content: View>(_ content: Content) -> some View {
+    /// SwiftUIの型推論負荷を減らすため、ライフサイクル修飾子を責務単位で分割。
+    private func bindSceneLifecycle<Content: View>(_ content: Content) -> some View {
         content
             .onAppear {
-            syncROISlidersFromCurrentInput()
-            applyRenderModeDefaults(renderMode)
-            refreshInspectorScene()
-            refreshROIPreviewScene()
+                syncROISlidersFromCurrentInput()
+                applyRenderModeDefaults(renderMode)
+                refreshInspectorScene()
+                refreshROIPreviewScene()
             }
             .onChange(of: showBluePoints) { _, _ in refreshInspectorScene() }
             .onChange(of: showRedPoints) { _, _ in refreshInspectorScene() }
@@ -65,6 +69,15 @@ struct DebugInspectorView: View {
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
+            .onDisappear {
+                autoApplyTask?.cancel()
+                autoApplyTask = nil
+            }
+    }
+
+    /// レンダーモードやROI適用状態に追随する再描画イベントを分離。
+    private func bindROILifecycle<Content: View>(_ content: Content) -> some View {
+        content
             .onChange(of: renderMode) { _, newMode in
                 applyRenderModeDefaults(newMode)
                 refreshInspectorScene()
@@ -86,15 +99,16 @@ struct DebugInspectorView: View {
             .onChange(of: roiNormMaxY) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMinZ) { _, _ in handleROISliderChanged() }
             .onChange(of: roiNormMaxZ) { _, _ in handleROISliderChanged() }
+    }
+
+    /// 自動適用のデバウンス制御だけを単独化して推論を軽くする。
+    private func bindAutoApplyLifecycle<Content: View>(_ content: Content) -> some View {
+        content
             .onChange(of: autoApplyROI) { _, isEnabled in
                 autoApplyTask?.cancel()
                 if isEnabled && hasUnappliedROIChanges {
                     scheduleAutoApply()
                 }
-            }
-            .onDisappear {
-                autoApplyTask?.cancel()
-                autoApplyTask = nil
             }
     }
 
