@@ -235,6 +235,24 @@ struct AnalysisConfig: Sendable {
     }
 }
 
+enum InspectorRenderMode: String, CaseIterable, Identifiable {
+    case texturedMesh = "Textured Mesh"
+    case sampledRGB = "Sampled RGB"
+    case maskLocator = "Mask Locator"
+
+    var id: String { rawValue }
+}
+
+enum InspectorFocusMode: String, CaseIterable, Identifiable {
+    case model = "Model"
+    case roi = "ROI"
+    case colorRich = "Color-Rich"
+    case blue = "Blue"
+    case red = "Red"
+
+    var id: String { rawValue }
+}
+
 enum PoCError: LocalizedError {
     case fileImportFailed(String)
     case sceneLoadFailed(String)

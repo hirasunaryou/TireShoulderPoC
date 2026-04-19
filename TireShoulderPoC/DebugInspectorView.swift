@@ -10,8 +10,13 @@ struct DebugInspectorView: View {
     @State private var inspectorScene: SCNScene?
     @State private var roiPreviewScene: SCNScene?
     @State private var sceneError: String?
+    @State private var renderMode: InspectorRenderMode = .texturedMesh
+    @State private var focusMode: InspectorFocusMode = .model
     @State private var showBluePoints = true
     @State private var showRedPoints = true
+    @State private var showSampledPoints = false
+    @State private var showColorRichPoints = false
+    @State private var showROIBounds = false
     @State private var autoApplyROI = false
     @State private var lastDelta: ROIReinspectDelta?
     @State private var autoApplyTask: Task<Void, Never>?
@@ -37,8 +42,35 @@ struct DebugInspectorView: View {
                     ProgressView()
                 }
 
+                Picker("Render Mode", selection: $renderMode) {
+                    ForEach(InspectorRenderMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Focus", selection: $focusMode) {
+                    ForEach(InspectorFocusMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                HStack(spacing: 10) {
+                    Button("Model") { focusMode = .model }
+                    Button("ROI") { focusMode = .roi }
+                    Button("Color-Rich") { focusMode = .colorRich }
+                    Button("Blue") { focusMode = .blue }
+                    Button("Red") { focusMode = .red }
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+
                 Toggle("青ポイント表示", isOn: $showBluePoints)
                 Toggle("赤ポイント表示", isOn: $showRedPoints)
+                Toggle("sampledPoints表示", isOn: $showSampledPoints)
+                Toggle("colorRichPoints表示", isOn: $showColorRichPoints)
+                Toggle("ROI/AABB表示", isOn: $showROIBounds)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("geometryNodes: \(input.package.geometryNodeCount)")
@@ -47,8 +79,13 @@ struct DebugInspectorView: View {
                     Text("reducedBlue/reducedRed: \(input.package.bluePoints.count) / \(input.package.redPoints.count)")
                     Text("skippedNoUVTriangles: \(input.package.skippedNoUVTriangles)")
                     Text("cachedSamples: \(input.package.cachedSamples.count)")
+                    Text("candidate/blue/red: \(input.package.colorRichPoints.count) / \(input.package.bluePoints.count) / \(input.package.redPoints.count)")
                 }
                 .font(.footnote)
+
+                if renderMode == .maskLocator {
+                    maskLocatorLegend
+                }
 
                 if !input.package.warnings.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -85,6 +122,14 @@ struct DebugInspectorView: View {
         }
         .onChange(of: showBluePoints) { _, _ in refreshInspectorScene() }
         .onChange(of: showRedPoints) { _, _ in refreshInspectorScene() }
+        .onChange(of: showSampledPoints) { _, _ in refreshInspectorScene() }
+        .onChange(of: showColorRichPoints) { _, _ in refreshInspectorScene() }
+        .onChange(of: showROIBounds) { _, _ in refreshInspectorScene() }
+        .onChange(of: renderMode) { _, mode in
+            applyRecommendedDefaultsIfNeeded(for: mode)
+            refreshInspectorScene()
+        }
+        .onChange(of: focusMode) { _, _ in refreshInspectorScene() }
         .onChange(of: input.package.sourceBounds) { _, _ in
             syncROISlidersFromCurrentInput()
             refreshInspectorScene()
@@ -111,6 +156,24 @@ struct DebugInspectorView: View {
             autoApplyTask?.cancel()
             autoApplyTask = nil
         }
+    }
+
+    private var maskLocatorLegend: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Mask Locator")
+                .font(.subheadline.bold())
+            HStack(spacing: 10) {
+                Label("Candidate: \(currentInput.package.colorRichPoints.count)", systemImage: "circle.fill")
+                    .foregroundStyle(.yellow)
+                Label("Blue: \(currentInput.package.bluePoints.count)", systemImage: "circle.fill")
+                    .foregroundStyle(.blue)
+                Label("Red: \(currentInput.package.redPoints.count)", systemImage: "circle.fill")
+                    .foregroundStyle(.red)
+            }
+            .font(.caption2)
+        }
+        .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var thresholdEditor: some View {
@@ -317,9 +380,14 @@ struct DebugInspectorView: View {
             inspectorScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
+                renderMode: renderMode,
                 showBlue: showBluePoints,
                 showRed: showRedPoints,
-                pendingROI: pendingROI,
+                showSampledPoints: showSampledPoints,
+                showColorRichPoints: showColorRichPoints,
+                showROIBounds: showROIBounds,
+                focusMode: focusMode,
+                pendingROI: showROIBounds ? pendingROI : nil,
                 appliedROI: sourceInput.roi
             )
             sceneError = nil
@@ -336,8 +404,13 @@ struct DebugInspectorView: View {
             roiPreviewScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
+                renderMode: .texturedMesh,
                 showBlue: true,
                 showRed: true,
+                showSampledPoints: true,
+                showColorRichPoints: true,
+                showROIBounds: true,
+                focusMode: .roi,
                 pendingROI: pendingROI,
                 appliedROI: sourceInput.roi
             )
@@ -345,6 +418,30 @@ struct DebugInspectorView: View {
         } catch {
             sceneError = error.localizedDescription
             roiPreviewScene = nil
+        }
+    }
+
+    private func applyRecommendedDefaultsIfNeeded(for mode: InspectorRenderMode) {
+        // モード切替時に「見たい情報」に合わせて推奨表示へ寄せる。
+        switch mode {
+        case .texturedMesh:
+            showSampledPoints = false
+            showColorRichPoints = false
+            showBluePoints = true
+            showRedPoints = true
+            showROIBounds = false
+        case .sampledRGB:
+            showSampledPoints = false
+            showColorRichPoints = false
+            showBluePoints = false
+            showRedPoints = false
+            showROIBounds = false
+        case .maskLocator:
+            showSampledPoints = false
+            showColorRichPoints = true
+            showBluePoints = true
+            showRedPoints = true
+            showROIBounds = true
         }
     }
 
