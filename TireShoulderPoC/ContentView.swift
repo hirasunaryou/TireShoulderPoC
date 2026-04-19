@@ -6,6 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var appModel: AppModel
     @State private var activeImportKind: ModelKind?
     @State private var isImporterPresented = false
+    @State private var nearColorRichRadiusMeters: Float = USDZLoader.nearColorRichRadiusMeters
 
     private var usdzType: UTType {
         UTType(filenameExtension: "usdz") ?? .data
@@ -19,6 +20,7 @@ struct ContentView: View {
                     loadSection
                     actionSection
                     statusSection
+                    nearColorRichDebugSection
 
                     if let newInput = appModel.newInput {
                         DebugInspectorView(kind: .new, input: newInput)
@@ -87,6 +89,9 @@ struct ContentView: View {
                 case .failure(let error):
                     appModel.errorMessage = error.localizedDescription
                 }
+            }
+            .onAppear {
+                nearColorRichRadiusMeters = USDZLoader.nearColorRichRadiusMeters
             }
         }
     }
@@ -176,6 +181,39 @@ struct ContentView: View {
             GroupBox("状態") {
                 Text(appModel.statusMessage)
                     .font(.subheadline)
+            }
+        }
+    }
+
+    private var nearColorRichDebugSection: some View {
+        Group {
+            if appModel.newInput != nil || appModel.usedInput != nil {
+                GroupBox("Debug: Near Color-Rich Radius") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Near Color-Rich Radius (meters)")
+                            Spacer()
+                            Text(String(format: "%.3f", nearColorRichRadiusMeters))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Slider(
+                            value: Binding(
+                                get: { Double(nearColorRichRadiusMeters) },
+                                set: { newValue in
+                                    nearColorRichRadiusMeters = Float(newValue)
+                                    USDZLoader.nearColorRichRadiusMeters = Float(newValue)
+                                }
+                            ),
+                            in: 0.002 ... 0.03
+                        )
+
+                        Text("値を変更後、既存の「キャッシュから再抽出」を実行してください。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
