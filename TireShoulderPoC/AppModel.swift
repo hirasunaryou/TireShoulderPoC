@@ -74,10 +74,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+
+    /// ROI値だけを更新する。再解析は呼び出し側で明示的に実行する。
+    func setROI(kind: ModelKind, roi: SpatialBounds3D?) {
+        guard var input = modelInput(for: kind) else { return }
+        input.roi = roi
+        setModelInput(input, for: kind)
+    }
+
     /// ROI変更時はこちらを使ってUSDZ全体を再inspectする。
     /// `reextractMasks` は cachedSamples のしきい値再分類専用であり、
     /// ROIで三角形を除外し直す責務は持たせない。
-    func reinspectModel(kind: ModelKind) async {
+    func reinspectModel(kind: ModelKind, reason: String = "ROIを反映") async {
         guard var input = modelInput(for: kind) else { return }
 
         isBusy = true
@@ -85,7 +93,7 @@ final class AppModel: ObservableObject {
         exportedCSVURL = nil
         analysisResult = nil
         overlayScene = nil
-        statusMessage = "\(kind.rawValue) ROIを反映して再解析中..."
+        statusMessage = "\(kind.rawValue) \(reason)して再解析中..."
 
         do {
             let config = self.config
