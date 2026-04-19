@@ -185,6 +185,13 @@ enum USDZLoader {
     private static let maxCachedSamples = 12_000
     static var nearColorRichRadiusMeters: Float = 0.01
 
+    enum ExtractionMode: String, CaseIterable {
+        case simpleThreshold = "Simple Threshold"
+        case nearColorRich = "Near Color-Rich"
+    }
+
+    static var extractionMode: ExtractionMode = .nearColorRich
+
     static func inspect(url: URL, config: AnalysisConfig) throws -> LoadedModelPackage {
         let resolvedBaseColorTextureSamplers = loadResolvedModelIOBaseColorTextureSamplers(url: url)
 
@@ -333,11 +340,11 @@ enum USDZLoader {
         }
 
         let colorRichSamples = cachedSamples.filter { $0.hsv.saturation >= 0.05 }
-        let classifiedPoints = classifyNearColorRichSamples(cachedSamples, config: config)
+        let classifiedPoints = classifySamples(cachedSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
-        let rawBlueCount = bluePoints.count
-        let rawRedCount = redPoints.count
+        let rawBlueCount = classifiedPoints.blueCount
+        let rawRedCount = classifiedPoints.redCount
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
@@ -351,6 +358,7 @@ enum USDZLoader {
         if skippedNoUVTriangles > 0 {
             warnings.append("UVなし三角形のため画像テクスチャを未サンプリング: \(skippedNoUVTriangles)")
         }
+        warnings.append("[ExtractionDebug] mode=\(extractionMode.rawValue) candidate=\(classifiedPoints.candidateCount) blue=\(classifiedPoints.blueCount) red=\(classifiedPoints.redCount)")
 
         let cachedStats = summarizeCachedSamples(cachedSamples)
         logCachedSampleHSVDiagnostics(cachedSamples, colorRichSamples: colorRichSamples, config: config)
@@ -382,20 +390,21 @@ enum USDZLoader {
     }
 
     static func reextractMasks(from package: LoadedModelPackage, config: AnalysisConfig) -> LoadedModelPackage {
-        let classifiedPoints = classifyNearColorRichSamples(package.cachedSamples, config: config)
+        let classifiedPoints = classifySamples(package.cachedSamples, config: config)
         let bluePoints = classifiedPoints.bluePoints
         let redPoints = classifiedPoints.redPoints
 
         let reducedBlue = voxelDownsample(bluePoints, size: config.maskVoxelSizeMeters)
         let reducedRed = voxelDownsample(redPoints, size: config.maskVoxelSizeMeters)
 
-        var warnings = package.warnings.filter { !$0.contains("マスク不足") }
+        var warnings = package.warnings.filter { !$0.contains("マスク不足") && !$0.contains("[ExtractionDebug]") }
         if reducedBlue.count < config.minimumMaskPoints {
             warnings.append("青マスク不足: reduced=\(reducedBlue.count), raw=\(bluePoints.count), min=\(config.minimumMaskPoints)")
         }
         if reducedRed.count < config.minimumMaskPoints {
             warnings.append("赤マスク不足: reduced=\(reducedRed.count), raw=\(redPoints.count), min=\(config.minimumMaskPoints)")
         }
+        warnings.append("[ExtractionDebug] mode=\(extractionMode.rawValue) candidate=\(classifiedPoints.candidateCount) blue=\(classifiedPoints.blueCount) red=\(classifiedPoints.redCount)")
 
         return LoadedModelPackage(
             displayName: package.displayName,
@@ -403,8 +412,8 @@ enum USDZLoader {
             redPoints: reducedRed.map(Point3.init),
             geometryNodeCount: package.geometryNodeCount,
             totalSamples: package.totalSamples,
-            rawBlueCount: bluePoints.count,
-            rawRedCount: redPoints.count,
+            rawBlueCount: classifiedPoints.blueCount,
+            rawRedCount: classifiedPoints.redCount,
             skippedNoUVTriangles: package.skippedNoUVTriangles,
             materialRecords: package.materialRecords,
             modelIOMaterialRecords: package.modelIOMaterialRecords,
@@ -670,10 +679,43 @@ enum USDZLoader {
         }
     }
 
+    private static func classifySamples(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], candidateCount: Int, blueCount: Int, redCount: Int) {
+        switch extractionMode {
+        case .simpleThreshold:
+            return classifySimpleThresholdSamples(samples, config: config)
+        case .nearColorRich:
+            return classifyNearColorRichSamples(samples, config: config)
+        }
+    }
+
+    private static func classifySimpleThresholdSamples(
+        _ samples: [CachedCentroidSample],
+        config: AnalysisConfig
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], candidateCount: Int, blueCount: Int, redCount: Int) {
+        var bluePoints: [SIMD3<Float>] = []
+        var redPoints: [SIMD3<Float>] = []
+
+        for sample in samples {
+            switch classify(hsv: sample.hsv, config: config) {
+            case .blue:
+                bluePoints.append(sample.worldPosition.simd)
+            case .red:
+                redPoints.append(sample.worldPosition.simd)
+            case .other:
+                break
+            }
+        }
+
+        return (bluePoints, redPoints, samples.count, bluePoints.count, redPoints.count)
+    }
+
     private static func classifyNearColorRichSamples(
         _ samples: [CachedCentroidSample],
         config: AnalysisConfig
-    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>]) {
+    ) -> (bluePoints: [SIMD3<Float>], redPoints: [SIMD3<Float>], candidateCount: Int, blueCount: Int, redCount: Int) {
         let colorRichSamples = samples.filter { $0.hsv.saturation >= 0.05 }
         let diagnostics = nearColorRichDiagnostics(samples, colorRichSamples: colorRichSamples, config: config)
         var bluePoints: [SIMD3<Float>] = []
@@ -693,7 +735,7 @@ enum USDZLoader {
             }
         }
 
-        return (bluePoints, redPoints)
+        return (bluePoints, redPoints, diagnostics.candidateNearColorRichCount, diagnostics.blueRuleCount, diagnostics.redRuleCount)
     }
 
     private static func nearColorRichDiagnostics(
