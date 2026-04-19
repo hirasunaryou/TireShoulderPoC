@@ -22,9 +22,13 @@ struct DebugInspectorView: View {
     @State private var autoApplyTask: Task<Void, Never>?
     @State private var isBrushEditing = false
     @State private var brushMode: BrushPaintMode = .add
+    @State private var brushInteractionMode: InteractiveSceneKitView.BrushInteractionMode = .paint
     @State private var brushRadiusMeters: Float = CropBrushState.default.radiusMeters
     @State private var brushAutoROIMarginMeters: Float = CropBrushState.default.autoROIMarginMeters
     @State private var cropBrushPreview: CropBrushPreview?
+    @State private var persistedCameraTransform: simd_float4x4?
+    @State private var shouldAutoFrameOnNextRefresh = true
+    @State private var latestBrushStamp: BrushStamp3D?
 
     // ROI編集用の正規化値(0...1)。
     @State private var roiNormMinX: Float = 0
@@ -103,8 +107,15 @@ struct DebugInspectorView: View {
                 refreshInspectorScene()
                 refreshROIPreviewScene()
             }
-            .onChange(of: isBrushEditing) { _, _ in refreshInspectorScene() }
+            .onChange(of: isBrushEditing) { _, isEditing in
+                if isEditing {
+                    brushInteractionMode = .paint
+                    shouldAutoFrameOnNextRefresh = true
+                }
+                refreshInspectorScene()
+            }
             .onChange(of: brushMode) { _, _ in refreshInspectorScene() }
+            .onChange(of: brushInteractionMode) { _, _ in refreshInspectorScene() }
             .onChange(of: brushRadiusMeters) { _, newValue in
                 updateCropBrushRadius(newValue)
             }
@@ -133,15 +144,29 @@ struct DebugInspectorView: View {
     private var inspectorViewport: some View {
         Group {
             if let inspectorScene {
-                SceneKitOverlayView(
-                    scene: inspectorScene,
-                    isBrushEditing: isBrushEditing,
-                    minStampDistance: max(brushRadiusMeters * 0.55, 0.0008),
-                    onSurfaceHit: isBrushEditing ? { point in
-                        addBrushStamp(at: point)
-                    } : nil
-                )
-                    .frame(height: 280)
+                ZStack(alignment: .topLeading) {
+                    SceneKitOverlayView(
+                        scene: inspectorScene,
+                        pointOfView: inspectorScene.rootNode.childNode(withName: "InspectorCamera", recursively: true),
+                        isBrushEditing: isBrushEditing,
+                        brushInteractionMode: brushInteractionMode,
+                        minStampDistance: max(brushRadiusMeters * 0.55, 0.0008),
+                        cameraTransform: persistedCameraTransform,
+                        onSurfaceHit: isBrushEditing ? { point in
+                            addBrushStamp(at: point)
+                        } : nil,
+                        onCameraTransformChanged: { transform in
+                            persistedCameraTransform = transform
+                        },
+                        onDoubleTapReset: {
+                            fitToModel()
+                        }
+                    )
+                    if isBrushEditing {
+                        brushHelpOverlay
+                    }
+                }
+                    .frame(height: 390)
             } else if let sceneError {
                 Text(sceneError)
                     .foregroundStyle(.red)
@@ -339,11 +364,19 @@ struct DebugInspectorView: View {
                 .font(.subheadline.bold())
 
             Toggle("Brush編集モード", isOn: $isBrushEditing)
+            if isBrushEditing {
+                Picker("Interaction", selection: $brushInteractionMode) {
+                    Text("Paint").tag(InteractiveSceneKitView.BrushInteractionMode.paint)
+                    Text("Navigate").tag(InteractiveSceneKitView.BrushInteractionMode.navigate)
+                }
+                .pickerStyle(.segmented)
+            }
             Picker("Paint", selection: $brushMode) {
                 Text("Add").tag(BrushPaintMode.add)
                 Text("Erase").tag(BrushPaintMode.erase)
             }
             .pickerStyle(.segmented)
+            fitButtonRow
 
             sliderRow(label: "Brush Radius [m]", value: $brushRadiusMeters, range: 0.001 ... 0.02)
             sliderRow(label: "Auto ROI Margin [m]", value: $brushAutoROIMarginMeters, range: 0.001 ... 0.02)
@@ -384,6 +417,33 @@ struct DebugInspectorView: View {
                 .buttonStyle(.bordered)
             }
         }
+    }
+
+    private var fitButtonRow: some View {
+        HStack(spacing: 8) {
+            Button("Fit Model") { fitToModel() }
+                .buttonStyle(.bordered)
+            Button("Fit ROI") { fitToROI() }
+                .buttonStyle(.bordered)
+            Button("Fit Brush") { fitToBrush() }
+                .buttonStyle(.borderedProminent)
+            Button("Reset View") { fitToModel() }
+                .buttonStyle(.bordered)
+        }
+        .font(.caption)
+    }
+
+    private var brushHelpOverlay: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("1本指: 塗る")
+            Text("2本指: 視点移動")
+            Text("Pinch: 拡大縮小")
+            Text("Double Tap: Reset")
+        }
+        .font(.caption2)
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(10)
     }
 
     private func roiAxisEditor(axis: String,
@@ -491,6 +551,8 @@ struct DebugInspectorView: View {
         do {
             let sourceInput = kind == .new ? appModel.newInput : appModel.usedInput
             guard let sourceInput else { return }
+            let shouldFrame = shouldAutoFrameOnNextRefresh
+            let framingScale: Float = (isBrushEditing && shouldFrame) ? 0.72 : 1.0
             inspectorScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
@@ -502,10 +564,17 @@ struct DebugInspectorView: View {
                 showROIBounds: showROIBounds,
                 focusMode: focusMode,
                 selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+                recentBrushStamp: latestBrushStamp,
                 brushAutoROI: cropBrushPreview?.autoROI,
                 pendingROI: pendingROI,
-                appliedROI: sourceInput.roi
+                appliedROI: sourceInput.roi,
+                framingDistanceScale: framingScale
             )
+            if shouldFrame {
+                let target = preferredBrushStartBounds(from: sourceInput) ?? focusBounds(for: sourceInput) ?? sourceInput.package.sourceBounds
+                persistedCameraTransform = SceneOverlayBuilder.makeFramingCamera(bounds: target, distanceScale: framingScale).simdTransform
+                shouldAutoFrameOnNextRefresh = false
+            }
             sceneError = nil
         } catch {
             sceneError = error.localizedDescription
@@ -607,10 +676,16 @@ struct DebugInspectorView: View {
         var brush = currentInput.cropBrush ?? CropBrushState.default
         brush.radiusMeters = brushRadiusMeters
         brush.autoROIMarginMeters = brushAutoROIMarginMeters
-        brush.stamps.append(
-            BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: brushMode)
-        )
+        let newStamp = BrushStamp3D(center: point, radiusMeters: brushRadiusMeters, mode: brushMode)
+        brush.stamps.append(newStamp)
         appModel.setCropBrush(kind: kind, brush: brush)
+        latestBrushStamp = newStamp
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            if latestBrushStamp?.id == newStamp.id {
+                latestBrushStamp = nil
+                refreshInspectorScene()
+            }
+        }
         refreshCropBrushPreview()
         refreshInspectorScene()
         refreshROIPreviewScene()
@@ -687,5 +762,62 @@ struct DebugInspectorView: View {
             showBluePoints = true
             showRedPoints = true
         }
+    }
+
+    private func fitToModel() {
+        let bounds = currentInput.package.sourceBounds
+        persistedCameraTransform = SceneOverlayBuilder.makeFramingCamera(bounds: bounds, distanceScale: 0.86).simdTransform
+    }
+
+    private func fitToROI() {
+        let target = pendingROIForFit ?? currentInput.roi ?? currentInput.package.sourceBounds
+        persistedCameraTransform = SceneOverlayBuilder.makeFramingCamera(bounds: target, distanceScale: 0.84).simdTransform
+    }
+
+    private func fitToBrush() {
+        let target = cropBrushPreview?.selectedPointsBounds
+            ?? cropBrushPreview?.autoROI
+            ?? pendingROIForFit
+            ?? currentInput.roi
+            ?? currentInput.package.sourceBounds
+        persistedCameraTransform = SceneOverlayBuilder.makeFramingCamera(bounds: target, distanceScale: 0.8).simdTransform
+    }
+
+    private var pendingROIForFit: SpatialBounds3D? {
+        hasUnappliedROIChanges ? pendingROI : nil
+    }
+
+    private func preferredBrushStartBounds(from input: ModelInput) -> SpatialBounds3D? {
+        if let autoROI = cropBrushPreview?.autoROI {
+            return autoROI
+        }
+        if hasUnappliedROIChanges {
+            return pendingROI
+        }
+        if let inputROI = input.roi {
+            return inputROI
+        }
+        return input.package.sourceBounds
+    }
+
+    private func focusBounds(for input: ModelInput) -> SpatialBounds3D? {
+        switch focusMode {
+        case .model:
+            return input.package.sourceBounds
+        case .roi:
+            return pendingROIForFit ?? input.roi
+        case .colorRich:
+            return SpatialBounds3D(points: input.package.colorRichPoints.map(\.simd))
+        case .blue:
+            return SpatialBounds3D(points: input.package.bluePoints.map(\.simd))
+        case .red:
+            return SpatialBounds3D(points: input.package.redPoints.map(\.simd))
+        }
+    }
+}
+
+private extension CropBrushPreview {
+    var selectedPointsBounds: SpatialBounds3D? {
+        SpatialBounds3D(points: selectedPoints.map(\.simd))
     }
 }
