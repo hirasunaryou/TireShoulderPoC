@@ -43,19 +43,7 @@ enum SceneOverlayBuilder {
 
     static func makeInspectorScene(modelURL: URL,
                                    package: LoadedModelPackage,
-                                   renderMode: InspectorRenderMode,
-                                   showBlue: Bool,
-                                   showRed: Bool,
-                                   showSampledPoints: Bool,
-                                   showColorRichPoints: Bool,
-                                   showROIBounds: Bool,
-                                   focusMode: InspectorFocusMode,
-                                   selectedBrushPoints: [Point3] = [],
-                                   recentBrushStamp: BrushStamp3D? = nil,
-                                   brushAutoROI: SpatialBounds3D? = nil,
-                                   pendingROI: SpatialBounds3D? = nil,
-                                   appliedROI: SpatialBounds3D? = nil,
-                                   framingDistanceScale: Float = 1.0) throws -> SCNScene {
+                                   options: InspectorSceneOptions) throws -> SCNScene {
         let rawScene: SCNScene
         do {
             rawScene = try SCNScene(url: modelURL, options: nil)
@@ -70,7 +58,7 @@ enum SceneOverlayBuilder {
         cloneChildren(from: rawScene.rootNode, to: rawContainer)
         // モードごとに「元メッシュ」と「点群」の主役を切り替える。
         let meshOpacity: CGFloat
-        switch renderMode {
+        switch options.renderMode {
         case .texturedMesh:
             meshOpacity = 0.95
         case .sampledRGB:
@@ -81,7 +69,7 @@ enum SceneOverlayBuilder {
         applyOpacityRecursively(node: rawContainer, opacity: meshOpacity)
         scene.rootNode.addChildNode(rawContainer)
 
-        if renderMode == .sampledRGB {
+        if options.renderMode == .sampledRGB {
             // 解析に使う cachedSamples.rgb をそのまま可視化。
             scene.rootNode.addChildNode(
                 coloredPointCloudNode(
@@ -90,7 +78,7 @@ enum SceneOverlayBuilder {
                 )
             )
         } else {
-            if showSampledPoints {
+            if options.showSampledPoints {
                 scene.rootNode.addChildNode(
                     pointCloudNode(
                         points: package.sampledPoints.map(\.simd),
@@ -99,65 +87,65 @@ enum SceneOverlayBuilder {
                     )
                 )
             }
-            if showColorRichPoints || renderMode == .maskLocator {
+            if options.showColorRichPoints || options.renderMode == .maskLocator {
                 scene.rootNode.addChildNode(
                     pointCloudNode(
                         points: package.colorRichPoints.map(\.simd),
                         color: .systemYellow,
-                        pointRadius: renderMode == .maskLocator ? 0.00038 : 0.00024
+                        pointRadius: options.renderMode == .maskLocator ? 0.00038 : 0.00024
                     )
                 )
             }
         }
 
-        if showBlue {
+        if options.showBlue {
             scene.rootNode.addChildNode(
                 pointCloudNode(
                     points: package.bluePoints.map(\.simd),
                     color: .systemBlue,
-                    pointRadius: renderMode == .maskLocator ? 0.0007 : 0.0006
+                    pointRadius: options.renderMode == .maskLocator ? 0.0007 : 0.0006
                 )
             )
         }
-        if showRed {
+        if options.showRed {
             scene.rootNode.addChildNode(
                 pointCloudNode(
                     points: package.redPoints.map(\.simd),
                     color: .systemRed,
-                    pointRadius: renderMode == .maskLocator ? 0.0007 : 0.0006
+                    pointRadius: options.renderMode == .maskLocator ? 0.0007 : 0.0006
                 )
             )
         }
 
-        if showROIBounds {
-            if let appliedROI {
+        if options.showROIBounds {
+            if let appliedROI = options.appliedROI {
                 let appliedNode = aabbWireframeNode(bounds: appliedROI, color: .systemGreen, thickness: 0.00045)
                 appliedNode.name = "AppliedROI"
                 scene.rootNode.addChildNode(appliedNode)
             }
-            if let pendingROI {
+            if let pendingROI = options.pendingROI {
                 let pendingNode = aabbWireframeNode(bounds: pendingROI, color: .systemOrange, thickness: 0.00034)
                 pendingNode.name = "PendingROI"
                 pendingNode.opacity = 0.90
                 scene.rootNode.addChildNode(pendingNode)
             }
-            if let brushAutoROI {
+            if let brushAutoROI = options.brushAutoROI {
                 let brushROINode = aabbWireframeNode(bounds: brushAutoROI, color: .cyan, thickness: 0.00052)
                 brushROINode.name = "BrushAutoROI"
                 scene.rootNode.addChildNode(brushROINode)
             }
         }
 
-        if !selectedBrushPoints.isEmpty {
+        if !options.selectedBrushPoints.isEmpty {
             scene.rootNode.addChildNode(
                 pointCloudNode(
-                    points: selectedBrushPoints.map(\.simd),
+                    points: options.selectedBrushPoints.map(\.simd),
                     color: .cyan,
                     pointRadius: 0.0011
                 )
             )
         }
-        if let recentBrushStamp {
+        if let recentBrushStamp = options.recentBrushStamp {
             let recentNode = SCNNode(geometry: SCNSphere(radius: CGFloat(max(recentBrushStamp.radiusMeters * 0.65, 0.0012))))
             recentNode.simdPosition = recentBrushStamp.center.simd
             recentNode.geometry?.firstMaterial?.diffuse.contents = UIColor.systemMint
@@ -168,14 +156,14 @@ enum SceneOverlayBuilder {
             scene.rootNode.addChildNode(recentNode)
         }
 
-        if renderMode == .maskLocator {
+        if options.renderMode == .maskLocator {
             if let colorRichBounds = SpatialBounds3D(points: package.colorRichPoints.map(\.simd)) {
                 scene.rootNode.addChildNode(aabbWireframeNode(bounds: colorRichBounds, color: .systemYellow, thickness: 0.00038))
             }
-            if showBlue, let blueBounds = SpatialBounds3D(points: package.bluePoints.map(\.simd)) {
+            if options.showBlue, let blueBounds = SpatialBounds3D(points: package.bluePoints.map(\.simd)) {
                 scene.rootNode.addChildNode(aabbWireframeNode(bounds: blueBounds, color: .systemBlue, thickness: 0.00038))
             }
-            if showRed, let redBounds = SpatialBounds3D(points: package.redPoints.map(\.simd)) {
+            if options.showRed, let redBounds = SpatialBounds3D(points: package.redPoints.map(\.simd)) {
                 scene.rootNode.addChildNode(aabbWireframeNode(bounds: redBounds, color: .systemRed, thickness: 0.00038))
             }
         }
@@ -183,13 +171,13 @@ enum SceneOverlayBuilder {
         addAxisGuide(to: scene.rootNode)
         // 寄り先フォーカス対象が空の場合は ROI / model 全体にフォールバックする。
         let focusBounds = makeFocusBounds(
-            focusMode: focusMode,
+            focusMode: options.focusMode,
             package: package,
-            pendingROI: pendingROI,
-            appliedROI: appliedROI
-        ) ?? pendingROI ?? appliedROI ?? package.sourceBounds
+            pendingROI: options.pendingROI,
+            appliedROI: options.appliedROI
+        ) ?? options.pendingROI ?? options.appliedROI ?? package.sourceBounds
         let framingBounds = focusBounds
-        let cameraNode = makeFramingCamera(bounds: framingBounds, distanceScale: framingDistanceScale)
+        let cameraNode = makeFramingCamera(bounds: framingBounds, distanceScale: options.framingDistanceScale)
         cameraNode.name = "InspectorCamera"
         scene.rootNode.addChildNode(cameraNode)
         return scene

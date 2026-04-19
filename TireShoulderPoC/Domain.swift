@@ -33,6 +33,42 @@ enum InspectorFocusMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Inspector scene 描画用のオプションを 1 つに束ねる。
+/// 引数の追加が必要になっても呼び出し側の差分衝突を最小化しやすい。
+struct InspectorSceneOptions: Sendable {
+    var renderMode: InspectorRenderMode
+    var focusMode: InspectorFocusMode
+    var showBlue: Bool
+    var showRed: Bool
+    var showSampledPoints: Bool
+    var showColorRichPoints: Bool
+    var showROIBounds: Bool
+    var selectedBrushPoints: [Point3]
+    var recentBrushStamp: BrushStamp3D?
+    var brushAutoROI: SpatialBounds3D?
+    var pendingROI: SpatialBounds3D?
+    var appliedROI: SpatialBounds3D?
+    var framingDistanceScale: Float
+
+    static func defaultTexturedMesh() -> InspectorSceneOptions {
+        InspectorSceneOptions(
+            renderMode: .texturedMesh,
+            focusMode: .model,
+            showBlue: true,
+            showRed: true,
+            showSampledPoints: false,
+            showColorRichPoints: false,
+            showROIBounds: false,
+            selectedBrushPoints: [],
+            recentBrushStamp: nil,
+            brushAutoROI: nil,
+            pendingROI: nil,
+            appliedROI: nil,
+            framingDistanceScale: 1.0
+        )
+    }
+}
+
 struct Point3: Hashable, Sendable {
     var x: Float
     var y: Float
@@ -144,6 +180,13 @@ struct CropBrushState: Hashable, Sendable {
     var autoROIMarginMeters: Float
 
     static let `default` = CropBrushState(stamps: [], radiusMeters: 0.006, autoROIMarginMeters: 0.004)
+}
+
+/// Brush preview に必要な最小情報だけを持つ軽量 value type。
+struct CropBrushPreview: Sendable {
+    let selectedSampleCount: Int
+    let selectedPoints: [Point3]
+    let autoROI: SpatialBounds3D?
 }
 
 struct MaterialInspectionRecord: Identifiable, Sendable {

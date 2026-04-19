@@ -44,17 +44,19 @@ struct DebugInspectorView: View {
                 bindSceneLifecycle(
             GroupBox("\(kind.rawValue) Debug Inspector") {
                 VStack(alignment: .leading, spacing: 10) {
-                    inspectorViewport
-                    renderAndFocusControls
-                    visibilityToggles
-                    maskLocatorLegend
-                    packageStats
-                    warningSection
-                    thresholdEditor
-                    roiEditor
-                    cropBrushEditor
+                    InspectorViewportSection { inspectorViewport }
+                    InspectorRenderControlsSection {
+                        renderAndFocusControls
+                        visibilityToggles
+                        maskLocatorLegend
+                    }
+                    InspectorStatsSection { packageStats }
+                    InspectorWarningsSection { warningSection }
+                    ThresholdEditorSection { thresholdEditor }
+                    ROIEditorSection { roiEditor }
+                    CropBrushSection { cropBrushEditor }
                     reextractButtonRow
-                    materialRecordSection
+                    MaterialInspectionSection { materialRecordSection }
                 }
             }
                 )
@@ -553,22 +555,11 @@ struct DebugInspectorView: View {
             guard let sourceInput else { return }
             let shouldFrame = shouldAutoFrameOnNextRefresh
             let framingScale: Float = (isBrushEditing && shouldFrame) ? 0.72 : 1.0
+            let options = makeInspectorOptions(sourceInput: sourceInput, framingScale: framingScale)
             inspectorScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
-                renderMode: renderMode,
-                showBlue: showBluePoints,
-                showRed: showRedPoints,
-                showSampledPoints: showSampledPoints,
-                showColorRichPoints: showColorRichPoints,
-                showROIBounds: showROIBounds,
-                focusMode: focusMode,
-                selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
-                recentBrushStamp: latestBrushStamp,
-                brushAutoROI: cropBrushPreview?.autoROI,
-                pendingROI: pendingROI,
-                appliedROI: sourceInput.roi,
-                framingDistanceScale: framingScale
+                options: options
             )
             if shouldFrame {
                 let target = preferredBrushStartBounds(from: sourceInput) ?? focusBounds(for: sourceInput) ?? sourceInput.package.sourceBounds
@@ -586,26 +577,53 @@ struct DebugInspectorView: View {
         do {
             let sourceInput = kind == .new ? appModel.newInput : appModel.usedInput
             guard let sourceInput else { return }
+            let options = makeROIPreviewOptions(sourceInput: sourceInput)
             roiPreviewScene = try SceneOverlayBuilder.makeInspectorScene(
                 modelURL: sourceInput.fileURL,
                 package: sourceInput.package,
-                renderMode: .texturedMesh,
-                showBlue: true,
-                showRed: true,
-                showSampledPoints: false,
-                showColorRichPoints: false,
-                showROIBounds: true,
-                focusMode: .roi,
-                selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
-                brushAutoROI: cropBrushPreview?.autoROI,
-                pendingROI: pendingROI,
-                appliedROI: sourceInput.roi
+                options: options
             )
             sceneError = nil
         } catch {
             sceneError = error.localizedDescription
             roiPreviewScene = nil
         }
+    }
+
+    private func makeInspectorOptions(sourceInput: ModelInput, framingScale: Float) -> InspectorSceneOptions {
+        InspectorSceneOptions(
+            renderMode: renderMode,
+            focusMode: focusMode,
+            showBlue: showBluePoints,
+            showRed: showRedPoints,
+            showSampledPoints: showSampledPoints,
+            showColorRichPoints: showColorRichPoints,
+            showROIBounds: showROIBounds,
+            selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+            recentBrushStamp: latestBrushStamp,
+            brushAutoROI: cropBrushPreview?.autoROI,
+            pendingROI: pendingROI,
+            appliedROI: sourceInput.roi,
+            framingDistanceScale: framingScale
+        )
+    }
+
+    private func makeROIPreviewOptions(sourceInput: ModelInput) -> InspectorSceneOptions {
+        InspectorSceneOptions(
+            renderMode: .texturedMesh,
+            focusMode: .roi,
+            showBlue: true,
+            showRed: true,
+            showSampledPoints: false,
+            showColorRichPoints: false,
+            showROIBounds: true,
+            selectedBrushPoints: cropBrushPreview?.selectedPoints ?? [],
+            recentBrushStamp: nil,
+            brushAutoROI: cropBrushPreview?.autoROI,
+            pendingROI: pendingROI,
+            appliedROI: sourceInput.roi,
+            framingDistanceScale: 1.0
+        )
     }
 
     private func syncROISlidersFromCurrentInput() {
@@ -819,5 +837,69 @@ struct DebugInspectorView: View {
 private extension CropBrushPreview {
     var selectedPointsBounds: SpatialBounds3D? {
         SpatialBounds3D(points: selectedPoints.map(\.simd))
+    }
+}
+
+private struct InspectorViewportSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct InspectorRenderControlsSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct InspectorStatsSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct InspectorWarningsSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct ThresholdEditorSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct ROIEditorSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct CropBrushSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+    }
+}
+
+private struct MaterialInspectionSection<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
     }
 }

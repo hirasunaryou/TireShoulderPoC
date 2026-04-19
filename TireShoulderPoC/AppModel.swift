@@ -24,12 +24,6 @@ struct ROIReinspectDelta: Sendable {
     }
 }
 
-struct CropBrushPreview: Sendable {
-    let selectedSampleCount: Int
-    let autoROI: SpatialBounds3D?
-    let selectedPoints: [Point3]
-}
-
 @MainActor
 final class AppModel: ObservableObject {
     @Published var newInput: ModelInput?
@@ -114,20 +108,14 @@ final class AppModel: ObservableObject {
 
     func previewCropBrushSelection(kind: ModelKind) -> CropBrushPreview? {
         guard let input = modelInput(for: kind), let brush = input.cropBrush else { return nil }
-        let selected = USDZLoader.selectedSamples(from: input.package.cachedSamples, brush: brush)
-        let autoROI = USDZLoader.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
-        return CropBrushPreview(
-            selectedSampleCount: selected.count,
-            autoROI: autoROI,
-            selectedPoints: selected.map(\.worldPosition)
-        )
+        return CropBrushEngine.makePreview(samples: input.package.cachedSamples, brush: brush)
     }
 
     func applyCropBrushAsROI(kind: ModelKind, reason: String = "Crop Brushを適用") async -> ROIReinspectDelta? {
         guard let input = modelInput(for: kind),
               let brush = input.cropBrush else { return nil }
-        let selected = USDZLoader.selectedSamples(from: input.package.cachedSamples, brush: brush)
-        let autoROI = USDZLoader.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
+        let selected = CropBrushEngine.selectedSamples(from: input.package.cachedSamples, brush: brush)
+        let autoROI = CropBrushEngine.autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
         setROI(kind: kind, roi: autoROI)
         return await reinspectModel(kind: kind, reason: reason)
     }
