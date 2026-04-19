@@ -52,6 +52,21 @@ enum SceneOverlayBuilder {
         cloneChildren(from: rawScene.rootNode, to: rawContainer)
         scene.rootNode.addChildNode(rawContainer)
 
+        scene.rootNode.addChildNode(
+            pointCloudNode(
+                points: package.sampledPoints.map(\.simd),
+                color: .lightGray,
+                pointRadius: 0.0002
+            )
+        )
+        scene.rootNode.addChildNode(
+            pointCloudNode(
+                points: package.colorRichPoints.map(\.simd),
+                color: .systemYellow,
+                pointRadius: 0.00024
+            )
+        )
+
         if showBlue {
             scene.rootNode.addChildNode(pointCloudNode(points: package.bluePoints.map(\.simd), color: .systemBlue))
         }
@@ -63,9 +78,10 @@ enum SceneOverlayBuilder {
         return scene
     }
 
-    private static func pointCloudNode(points: [SIMD3<Float>], color: UIColor) -> SCNNode {
+    private static func pointCloudNode(points: [SIMD3<Float>],
+                                       color: UIColor,
+                                       pointRadius: CGFloat = 0.0006) -> SCNNode {
         let node = SCNNode()
-        let pointRadius: CGFloat = 0.0006
 
         // PoC用途のため、描画コストより視認性を優先してシンプルな球メッシュで表示する。
         let sphere = SCNSphere(radius: pointRadius)
