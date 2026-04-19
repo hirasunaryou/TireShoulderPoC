@@ -119,6 +119,33 @@ struct CachedCentroidSample: Identifiable, Sendable {
     let hsv: HSVColor
 }
 
+enum BrushPaintMode: String, CaseIterable, Hashable, Sendable {
+    case add
+    case erase
+}
+
+struct BrushStamp3D: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let center: Point3
+    let radiusMeters: Float
+    let mode: BrushPaintMode
+
+    init(id: UUID = UUID(), center: Point3, radiusMeters: Float, mode: BrushPaintMode) {
+        self.id = id
+        self.center = center
+        self.radiusMeters = radiusMeters
+        self.mode = mode
+    }
+}
+
+struct CropBrushState: Hashable, Sendable {
+    var stamps: [BrushStamp3D]
+    var radiusMeters: Float
+    var autoROIMarginMeters: Float
+
+    static let `default` = CropBrushState(stamps: [], radiusMeters: 0.006, autoROIMarginMeters: 0.004)
+}
+
 struct MaterialInspectionRecord: Identifiable, Sendable {
     let id = UUID()
     let nodeName: String
@@ -201,6 +228,7 @@ struct ModelInput {
     let kind: ModelKind
     let fileURL: URL
     var roi: SpatialBounds3D?
+    var cropBrush: CropBrushState?
     var package: LoadedModelPackage
 }
 
