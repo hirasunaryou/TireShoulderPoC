@@ -54,4 +54,45 @@ enum CropBrushEngine {
             autoROI: autoROI(from: selected, marginMeters: brush.autoROIMarginMeters)
         )
     }
+
+    static func selectedSamples(from samples: [CachedCentroidSample], manualBrush: ManualRegionBrushState) -> [CachedCentroidSample] {
+        guard manualBrush.isEnabled else { return [] }
+        let cropStyleBrush = CropBrushState(
+            stamps: manualBrush.stamps,
+            radiusMeters: manualBrush.radiusMeters,
+            autoROIMarginMeters: 0
+        )
+        return selectedSamples(from: samples, brush: cropStyleBrush)
+    }
+
+    static func selectedPointPositions(from samples: [CachedCentroidSample], manualBrush: ManualRegionBrushState) -> [Point3] {
+        selectedSamples(from: samples, manualBrush: manualBrush).map(\.worldPosition)
+    }
+
+    static func makeManualRegionPreview(samples: [CachedCentroidSample],
+                                        manualBrush: ManualRegionBrushState,
+                                        bluePoints: [Point3],
+                                        redPoints: [Point3],
+                                        epsilonMeters: Float = 0.0015) -> ManualRegionPreview {
+        let selected = selectedSamples(from: samples, manualBrush: manualBrush)
+        let selectedPositions = selected.map(\.worldPosition)
+        let gatedBlue = gate(points: bluePoints, selectedPositions: selectedPositions, epsilonMeters: epsilonMeters)
+        let gatedRed = gate(points: redPoints, selectedPositions: selectedPositions, epsilonMeters: epsilonMeters)
+        return ManualRegionPreview(
+            selectedPoints: selectedPositions,
+            selectedCount: selectedPositions.count,
+            gatedBlueCount: gatedBlue.count,
+            gatedRedCount: gatedRed.count
+        )
+    }
+
+    static func gate(points: [Point3], selectedPositions: [Point3], epsilonMeters: Float = 0.0015) -> [Point3] {
+        guard !points.isEmpty, !selectedPositions.isEmpty else { return [] }
+        let epsilonSq = epsilonMeters * epsilonMeters
+        return points.filter { point in
+            selectedPositions.contains { selected in
+                simd_length_squared(point.simd - selected.simd) <= epsilonSq
+            }
+        }
+    }
 }
