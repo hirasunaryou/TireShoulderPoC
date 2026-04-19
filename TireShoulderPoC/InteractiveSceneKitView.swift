@@ -161,15 +161,24 @@ struct InteractiveSceneKitView: UIViewRepresentable {
                 return
             }
 
-            if !force, let lastPanStampCenter {
-                let distance = simd_length(hitPosition - lastPanStampCenter)
-                if distance < max(parent.minStampDistance, 0.0008) {
-                    return
-                }
+            let minimumStep = max(parent.minStampDistance, 0.0008)
+            guard !force, let lastPanStampCenter else {
+                lastPanStampCenter = hitPosition
+                parent.onSurfaceHit(Point3(hitPosition))
+                return
             }
 
-            lastPanStampCenter = hitPosition
-            parent.onSurfaceHit(Point3(hitPosition))
+            let travel = hitPosition - lastPanStampCenter
+            let distance = simd_length(travel)
+            guard distance >= minimumStep else { return }
+
+            let segmentCount = max(1, Int(ceil(distance / minimumStep)))
+            for segmentIndex in 1...segmentCount {
+                let t = Float(segmentIndex) / Float(segmentCount)
+                let interpolated = lastPanStampCenter + (travel * t)
+                parent.onSurfaceHit(Point3(interpolated))
+            }
+            self.lastPanStampCenter = hitPosition
         }
 
         func applyCameraTransformIfNeeded(_ transform: simd_float4x4, to view: SCNView) {
@@ -209,19 +218,46 @@ struct InteractiveSceneKitView: UIViewRepresentable {
         }
 
         private func meshWorldPosition(from view: SCNView, at point: CGPoint) -> SIMD3<Float>? {
-            let hits = view.hitTest(point, options: [
-                .firstFoundOnly: false,
-                .boundingBoxOnly: false,
-                .ignoreHiddenNodes: true
-            ])
+            let probePoints = touchProbePoints(around: point)
+            let hitTestPasses: [[SCNHitTestOption: Any]] = [
+                [
+                    .firstFoundOnly: false,
+                    .boundingBoxOnly: false,
+                    .ignoreHiddenNodes: true,
+                    .backFaceCulling: true,
+                    .categoryBitMask: 1
+                ],
+                [
+                    .firstFoundOnly: false,
+                    .boundingBoxOnly: false,
+                    .ignoreHiddenNodes: true,
+                    .categoryBitMask: 1
+                ]
+            ]
 
-            for hit in hits {
-                guard hit.node.name == "InspectableMeshRoot" || hit.node.parent?.name == "InspectableMeshRoot" || hit.node.ancestor(named: "InspectableMeshRoot") != nil else {
-                    continue
+            for options in hitTestPasses {
+                for probePoint in probePoints {
+                    let hits = view.hitTest(probePoint, options: options)
+                    if let hit = hits.first {
+                        return SIMD3<Float>(hit.worldCoordinates)
+                    }
                 }
-                return SIMD3<Float>(hit.worldCoordinates)
             }
             return nil
+        }
+
+        private func touchProbePoints(around point: CGPoint) -> [CGPoint] {
+            [
+                point,
+                CGPoint(x: point.x + 8, y: point.y),
+                CGPoint(x: point.x - 8, y: point.y),
+                CGPoint(x: point.x, y: point.y + 8),
+                CGPoint(x: point.x, y: point.y - 8),
+                CGPoint(x: point.x + 12, y: point.y + 12),
+                CGPoint(x: point.x - 12, y: point.y + 12),
+                CGPoint(x: point.x + 12, y: point.y - 12),
+                CGPoint(x: point.x - 12, y: point.y - 12)
+            ]
         }
 
         private func orbitCamera(cameraNode: SCNNode, screenDelta: CGPoint) {

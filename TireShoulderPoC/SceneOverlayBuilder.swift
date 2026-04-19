@@ -4,6 +4,17 @@ import UIKit
 import simd
 
 enum SceneOverlayBuilder {
+    private static var rawSceneCache: [String: SCNScene] = [:]
+
+    private static func loadScene(url: URL) throws -> SCNScene {
+        let cacheKey = url.standardizedFileURL.path
+        if let cached = rawSceneCache[cacheKey] {
+            return cached
+        }
+        let loaded = try SCNScene(url: url, options: nil)
+        rawSceneCache[cacheKey] = loaded
+        return loaded
+    }
     static func makeOverlayScene(newURL: URL,
                                  usedURL: URL,
                                  usedToNew: Transform4x4) throws -> SCNScene {
@@ -11,8 +22,8 @@ enum SceneOverlayBuilder {
         let usedScene: SCNScene
 
         do {
-            newScene = try SCNScene(url: newURL, options: nil)
-            usedScene = try SCNScene(url: usedURL, options: nil)
+            newScene = try loadScene(url: newURL)
+            usedScene = try loadScene(url: usedURL)
         } catch {
             throw PoCError.sceneLoadFailed(error.localizedDescription)
         }
@@ -46,7 +57,7 @@ enum SceneOverlayBuilder {
                                    options: InspectorSceneOptions) throws -> SCNScene {
         let rawScene: SCNScene
         do {
-            rawScene = try SCNScene(url: modelURL, options: nil)
+            rawScene = try loadScene(url: modelURL)
         } catch {
             throw PoCError.sceneLoadFailed(error.localizedDescription)
         }
@@ -56,6 +67,7 @@ enum SceneOverlayBuilder {
         let rawContainer = SCNNode()
         rawContainer.name = "InspectableMeshRoot"
         cloneChildren(from: rawScene.rootNode, to: rawContainer)
+        setCategoryBitMaskRecursively(node: rawContainer, mask: 1)
         // モードごとに「元メッシュ」と「点群」の主役を切り替える。
         let meshOpacity: CGFloat
         switch options.renderMode {
@@ -171,6 +183,7 @@ enum SceneOverlayBuilder {
             recentNode.geometry?.firstMaterial?.emission.contents = UIColor.white
             recentNode.opacity = 0.92
             recentNode.name = "RecentBrushStamp"
+            recentNode.categoryBitMask = 2
             scene.rootNode.addChildNode(recentNode)
         }
 
@@ -256,6 +269,7 @@ enum SceneOverlayBuilder {
         for (start, end) in edges {
             root.addChildNode(lineNode(from: start, to: end, color: color, thickness: thickness))
         }
+        setCategoryBitMaskRecursively(node: root, mask: 2)
         return root
     }
 
@@ -299,8 +313,10 @@ enum SceneOverlayBuilder {
         for point in points {
             let pointNode = SCNNode(geometry: sphere)
             pointNode.simdPosition = point
+            pointNode.categoryBitMask = 2
             node.addChildNode(pointNode)
         }
+        node.categoryBitMask = 2
         return node
     }
 
@@ -315,8 +331,10 @@ enum SceneOverlayBuilder {
 
             let pointNode = SCNNode(geometry: sphere)
             pointNode.simdPosition = sample.worldPosition.simd
+            pointNode.categoryBitMask = 2
             root.addChildNode(pointNode)
         }
+        root.categoryBitMask = 2
         return root
     }
 
@@ -351,6 +369,11 @@ enum SceneOverlayBuilder {
         for child in root.childNodes {
             destination.addChildNode(child.clone())
         }
+    }
+
+    private static func setCategoryBitMaskRecursively(node: SCNNode, mask: Int) {
+        node.categoryBitMask = mask
+        node.childNodes.forEach { setCategoryBitMaskRecursively(node: $0, mask: mask) }
     }
 
     private static func applyOpacityRecursively(node: SCNNode, opacity: CGFloat) {
@@ -425,6 +448,9 @@ enum SceneOverlayBuilder {
         zNode.eulerAngles = SCNVector3(Float.pi / 2, 0, 0)
         zNode.position = SCNVector3(0, 0, Float(length / 2))
 
+        xNode.categoryBitMask = 2
+        yNode.categoryBitMask = 2
+        zNode.categoryBitMask = 2
         rootNode.addChildNode(xNode)
         rootNode.addChildNode(yNode)
         rootNode.addChildNode(zNode)
