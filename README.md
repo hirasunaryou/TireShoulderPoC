@@ -75,3 +75,4 @@ iPhoneローカルで **新品 / 走行品のUSDZ** を読み込み、
 - `docs/architecture.md`
 - `docs/github-quickstart.md`
 - `docs/codex-next-prompt.md`
+- `docs/3d-analysis-development-notes.md`
